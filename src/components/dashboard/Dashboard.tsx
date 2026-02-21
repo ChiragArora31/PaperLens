@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, type ComponentType, type CSSProperties } f
 import { motion } from 'framer-motion';
 import {
   ArrowLeft,
-  BookOpen,
   Sparkles,
   ScrollText,
   Brain,
@@ -18,6 +17,7 @@ import {
 } from 'lucide-react';
 import { PaperAnalysis } from '@/lib/types';
 import ThemeToggle from '@/components/ThemeToggle';
+import BrandMark from '@/components/BrandMark';
 import TldrSection from './TldrSection';
 import ExplanationTabs from './ExplanationTabs';
 import MermaidDiagram from './MermaidDiagram';
@@ -94,7 +94,7 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
               </button>
 
               <div className="hidden items-center gap-2 md:flex">
-                <BookOpen className="h-4 w-4" style={{ color: 'hsl(var(--accent-blue))' }} />
+                <BrandMark size={28} />
                 <span className="brand-wordmark" style={{ fontSize: '1.12rem' }}>
                   PaperLens
                 </span>

@@ -213,6 +213,13 @@ pre {
   line-height: 1;
 }
 
+.brand-mark-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 8px 18px hsl(0 0% 0% / 0.16));
+}
+
 .brand-wordmark {
   display: inline-flex;
   align-items: center;

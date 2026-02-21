@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  GraduationCap,
   Brain,
   Eye,
   Layers,
@@ -14,6 +13,7 @@ import {
 } from 'lucide-react';
 import HeroInput from '@/components/HeroInput';
 import ThemeToggle from '@/components/ThemeToggle';
+import BrandMark from '@/components/BrandMark';
 import Dashboard from '@/components/dashboard/Dashboard';
 import { PaperAnalysis } from '@/lib/types';
 
@@ -229,8 +229,8 @@ export default function Home() {
           className="glass landing-topbar mb-12 flex items-center justify-between rounded-2xl px-4 py-3 md:px-5"
         >
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[hsl(var(--accent-blue)/0.14)] md:h-11 md:w-11">
-              <GraduationCap className="h-5 w-5 md:h-6 md:w-6" style={{ color: 'hsl(var(--accent-blue))' }} />
+            <div className="brand-mark-wrap">
+              <BrandMark size={44} />
             </div>
             <div>
               <p className="brand-wordmark landing-brand-wordmark">

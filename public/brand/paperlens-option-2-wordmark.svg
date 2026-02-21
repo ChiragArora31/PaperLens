@@ -1,0 +1,25 @@
+<svg width="920" height="240" viewBox="0 0 920 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg2" x1="24" y1="24" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#465BFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#0EA5E9" stop-opacity="0.24"/>
+    </linearGradient>
+    <linearGradient id="st2" x1="34" y1="24" x2="182" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4B63FF"/>
+      <stop offset="1" stop-color="#22C1D6"/>
+    </linearGradient>
+    <linearGradient id="txt2" x1="516" y1="36" x2="746" y2="166" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4B63FF"/>
+      <stop offset="1" stop-color="#22C1D6"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="192" height="192" rx="60" fill="url(#bg2)" stroke="url(#st2)" stroke-width="4.2"/>
+  <path d="M112 56L156 80V144L112 168L68 144V80L112 56Z" stroke="#0F172A" stroke-opacity="0.84" stroke-width="7.2" stroke-linejoin="round"/>
+  <path d="M68 80L112 104L156 80" stroke="#0F172A" stroke-opacity="0.74" stroke-width="7.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="112" cy="112" r="21.5" stroke="url(#st2)" stroke-width="8"/>
+  <path d="M127 127L147 147" stroke="url(#st2)" stroke-width="8" stroke-linecap="round"/>
+
+  <text x="246" y="141" fill="#0F172A" font-size="102" font-weight="700" font-family="Manrope, Inter, Segoe UI, sans-serif" letter-spacing="-3.2">Paper</text>
+  <text x="510" y="141" fill="url(#txt2)" font-size="102" font-weight="800" font-family="Manrope, Inter, Segoe UI, sans-serif" letter-spacing="-3.2">Lens</text>
+</svg>
