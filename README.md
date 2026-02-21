@@ -1,36 +1,111 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PaperLens
 
-## Getting Started
+PaperLens turns dense arXiv papers into a structured learning experience.  
+Instead of reading 20+ pages linearly, users get guided explanations, visual diagrams, concept cards, and an actionable learning path in one flow.
 
-First, run the development server:
+## What users get
+
+- Layered explanations (`Simple`, `Engineer`, `Deep Technical`)
+- TL;DR plus a full summary suite (`ultra-short`, `1-minute`, `5-minute`, detailed)
+- Concept cards with intuition, technical definitions, pitfalls, and mini quizzes
+- Visual section with guaranteed output:
+- `2` Mermaid flowcharts
+- `2` custom infographic-style diagrams
+- Section-by-section paper breakdown
+- Learning path with step goals and estimated time
+- Why-it-matters panel with use-cases and adoption context
+- Light and dark themes with responsive UI across desktop and mobile
+
+## Input model
+
+- Accepted input: arXiv URL or arXiv paper ID
+- No PDF uploads from users
+- Gemini API key is server-managed (`GEMINI_API_KEY`)
+
+## Tech stack
+
+- Next.js 16 (App Router, TypeScript)
+- React 19
+- Gemini (`@google/generative-ai`)
+- Mermaid
+- Framer Motion
+- Lucide Icons
+
+## Local setup
+
+1. Install dependencies:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Create env file:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cp .env.example .env.local
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+3. Add your Gemini key to `.env.local`:
 
-## Learn More
+```bash
+GEMINI_API_KEY=your_key_here
+```
 
-To learn more about Next.js, take a look at the following resources:
+4. Run the app:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run dev -- --port 3000 --webpack
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Open [http://localhost:3000](http://localhost:3000).
 
-## Deploy on Vercel
+## Quality checks
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run lint
+npm run typecheck
+npm run build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Or all at once:
+
+```bash
+npm run check
+```
+
+## Production hardening already included
+
+- Strict input validation for `/api/analyze`
+- Graceful handling of malformed upstream/model JSON
+- Fallback content path when PDF extraction fails
+- `no-store` upstream fetch behavior for fresh paper data
+- Security response headers (`X-Frame-Options`, `Referrer-Policy`, etc.)
+- `nodejs` runtime enforced for analysis route
+- Production-safe theme persistence and hydration
+
+## Project structure
+
+```text
+src/
+  app/
+    api/analyze/route.ts      # analysis endpoint
+    page.tsx                  # landing + orchestration
+  components/
+    HeroInput.tsx
+    ThemeToggle.tsx
+    dashboard/                # all learning sections
+  lib/
+    arxiv.ts                  # id parsing + metadata + text extraction
+    gemini.ts                 # prompting + normalization + fallbacks
+    types.ts
+```
+
+## Deploy notes
+
+- Recommended Node.js: `>=20.11.0`
+- Set `GEMINI_API_KEY` in your deployment environment
+- Run `npm run build` in CI before release
+
+---
+
+If you are working on the product direction: prioritize reliability of parsing + clarity of learning output over adding new surface features. That is where user trust is won.

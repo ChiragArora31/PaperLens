@@ -1,21 +1,32 @@
 {
-  "name": "paperplay-temp",
+  "name": "paperlens",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check": "npm run lint && npm run typecheck && npm run build"
+  },
+  "engines": {
+    "node": ">=20.11.0"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "framer-motion": "^12.34.1",
+    "lucide-react": "^0.574.0",
+    "mermaid": "^11.12.3",
     "next": "16.1.6",
+    "pdf-parse": "^2.4.5",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
