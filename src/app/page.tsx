@@ -425,6 +425,20 @@ export default function Home() {
             ))}
           </div>
         </section>
+
+        <footer className="landing-footer">
+          <p>
+            Built by{' '}
+            <a
+              href="https://x.com/iChiragArora"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="landing-footer-link"
+            >
+              ChiragArora
+            </a>
+          </p>
+        </footer>
       </div>
     </main>
   );
