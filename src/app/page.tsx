@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import {
   Brain,
   Eye,
@@ -158,6 +160,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [error, setError] = useState('');
+  const { data: session, status: sessionStatus } = useSession();
 
   useEffect(() => {
     if (!isLoading) {
@@ -195,6 +198,21 @@ export default function Home() {
 
       if (response.ok && result.success && result.data) {
         setAnalysis(result.data);
+
+        // Best-effort recent history tracking for authenticated users.
+        if (session?.user?.id) {
+          void fetch('/api/user/recent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              arxivId: result.data.metadata.id,
+              title: result.data.metadata.title,
+              abstract: result.data.metadata.abstract,
+              authors: result.data.metadata.authors,
+              categories: result.data.metadata.categories,
+            }),
+          });
+        }
       } else {
         const fallback =
           response.status >= 500
@@ -243,7 +261,16 @@ export default function Home() {
             </div>
           </div>
 
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <Link
+              href={sessionStatus === 'authenticated' ? '/dashboard' : '/auth'}
+              className="rounded-xl border px-3 py-2 text-sm font-semibold transition-all hover:-translate-y-0.5"
+              style={{ borderColor: 'hsl(var(--border))', color: 'hsl(var(--text-secondary))' }}
+            >
+              {sessionStatus === 'authenticated' ? 'My Dashboard' : 'Login / Sign up'}
+            </Link>
+            <ThemeToggle />
+          </div>
         </motion.nav>
 
         <section className="relative mb-16 grid gap-10 xl:grid-cols-[0.98fr_1.02fr] xl:items-center">

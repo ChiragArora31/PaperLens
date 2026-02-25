@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import { motion } from 'framer-motion';
 import {
   ArrowLeft,
@@ -14,6 +16,8 @@ import {
   ExternalLink,
   Calendar,
   Users,
+  BookmarkPlus,
+  BookmarkCheck,
 } from 'lucide-react';
 import { PaperAnalysis } from '@/lib/types';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -46,7 +50,10 @@ const sections = [
 
 export default function Dashboard({ analysis, onBack }: DashboardProps) {
   const [activeSection, setActiveSection] = useState('tldr');
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [bookmarkLoading, setBookmarkLoading] = useState(false);
   const sectionRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const { data: session, status: sessionStatus } = useSession();
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -68,6 +75,64 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
 
   const meta = analysis.metadata;
   const mermaidDiagrams = analysis.diagrams.slice(0, 2);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId || !meta.id) {
+      setIsBookmarked(false);
+      return;
+    }
+
+    const loadBookmarkState = async () => {
+      try {
+        const response = await fetch(`/api/user/bookmarks?arxivId=${encodeURIComponent(meta.id)}`, {
+          cache: 'no-store',
+        });
+        if (!response.ok) return;
+        const result = (await response.json()) as {
+          success?: boolean;
+          data?: { isBookmarked?: boolean };
+        };
+        if (result.success) setIsBookmarked(Boolean(result.data?.isBookmarked));
+      } catch {
+        // Ignore bookmark status errors in UI.
+      }
+    };
+
+    void loadBookmarkState();
+  }, [session?.user?.id, meta.id]);
+
+  const toggleBookmark = async () => {
+    if (!session?.user?.id || !meta.id || bookmarkLoading) return;
+
+    setBookmarkLoading(true);
+    try {
+      if (isBookmarked) {
+        const response = await fetch(`/api/user/bookmarks?arxivId=${encodeURIComponent(meta.id)}`, {
+          method: 'DELETE',
+        });
+        if (response.ok) setIsBookmarked(false);
+        return;
+      }
+
+      const response = await fetch('/api/user/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          arxivId: meta.id,
+          title: meta.title,
+          abstract: meta.abstract,
+          authors: meta.authors,
+          categories: meta.categories,
+        }),
+      });
+
+      if (response.ok) setIsBookmarked(true);
+    } finally {
+      setBookmarkLoading(false);
+    }
+  };
+
   const publishedDate = (() => {
     if (!meta.published) return '';
     const parsed = new Date(meta.published);
@@ -158,6 +223,24 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
                 <ExternalLink className="h-3.5 w-3.5" />
                 <span>arXiv:{meta.id}</span>
               </a>
+            )}
+
+            {sessionStatus === 'authenticated' && meta.id && (
+              <button
+                onClick={toggleBookmark}
+                disabled={bookmarkLoading}
+                className="stat-pill transition-all hover:-translate-y-0.5"
+              >
+                {isBookmarked ? <BookmarkCheck className="h-3.5 w-3.5" /> : <BookmarkPlus className="h-3.5 w-3.5" />}
+                <span>{isBookmarked ? 'Bookmarked' : 'Bookmark'}</span>
+              </button>
+            )}
+
+            {sessionStatus === 'unauthenticated' && (
+              <Link href="/auth" className="stat-pill transition-all hover:-translate-y-0.5">
+                <BookmarkPlus className="h-3.5 w-3.5" />
+                <span>Login to bookmark</span>
+              </Link>
             )}
           </div>
 
