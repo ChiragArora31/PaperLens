@@ -10,6 +10,10 @@ const credentialsSchema = z.object({
   password: z.string().min(8).max(72),
 });
 
+const authSecret =
+  process.env.NEXTAUTH_SECRET ||
+  (process.env.NODE_ENV !== 'production' ? 'paperlens-dev-secret-change-me' : undefined);
+
 const providers: NextAuthOptions['providers'] = [
   CredentialsProvider({
     name: 'Email and Password',
@@ -48,6 +52,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
 }
 
 export const authOptions: NextAuthOptions = {
+  secret: authSecret,
   providers,
   session: {
     strategy: 'jwt',

@@ -386,9 +386,17 @@ export async function fetchArxivPaperText(
     }
     diagnostics.push(`PDF text too short (${pdfText.length} chars).`);
   } catch (error) {
-    diagnostics.push(
-      `PDF extraction failed: ${error instanceof Error ? error.message : 'unknown error'}`
-    );
+    const message = error instanceof Error ? error.message : '';
+    if (/timeout|aborted/i.test(message)) {
+      diagnostics.push('PDF extraction timed out.');
+    } else if (/failed to fetch pdf|unexpected content type/i.test(message)) {
+      diagnostics.push('PDF retrieval was unavailable.');
+    } else {
+      diagnostics.push('PDF extraction was unavailable in this environment.');
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('PDF extraction fallback triggered:', message || error);
+    }
   }
 
   const htmlFallback = await tryFetchHtmlPaperText(normalizedId);

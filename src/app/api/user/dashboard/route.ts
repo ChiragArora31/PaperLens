@@ -17,15 +17,16 @@ export async function GET() {
     const bookmarks = listBookmarks(userId, 20);
 
     const seedCategories = Array.from(
-      new Set(
-        [...bookmarks, ...recents]
-          .flatMap((paper) => paper.categories)
-          .filter(Boolean)
-      )
+      new Set([...bookmarks, ...recents].flatMap((paper) => paper.categories).filter(Boolean))
     );
 
     const excludeIds = Array.from(new Set([...bookmarks, ...recents].map((paper) => paper.arxivId)));
-    const recommendations = await fetchRecommendedPapers(seedCategories, excludeIds, 12);
+
+    // Only produce recommendations when we have user-derived signals.
+    const recommendations =
+      seedCategories.length > 0
+        ? await fetchRecommendedPapers(seedCategories, excludeIds, 6)
+        : [];
 
     return NextResponse.json({
       success: true,

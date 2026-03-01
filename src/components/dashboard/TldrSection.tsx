@@ -2,11 +2,13 @@
 
 import { motion } from 'framer-motion';
 import { Sparkles, Star, BarChart3, Lightbulb } from 'lucide-react';
-import { TldrData } from '@/lib/types';
+import type { AnalysisEvidence, TldrData } from '@/lib/types';
 import { RichParagraph } from './RichText';
+import ClaimEvidencePanel from './ClaimEvidencePanel';
 
 interface TldrSectionProps {
   data: TldrData;
+  evidence?: AnalysisEvidence;
 }
 
 const difficultyConfig: Record<string, { label: string; class: string }> = {
@@ -15,7 +17,7 @@ const difficultyConfig: Record<string, { label: string; class: string }> = {
   advanced: { label: 'Advanced', class: 'badge-advanced' },
 };
 
-export default function TldrSection({ data }: TldrSectionProps) {
+export default function TldrSection({ data, evidence }: TldrSectionProps) {
   const diff = difficultyConfig[data.difficulty.toLowerCase()] || difficultyConfig.intermediate;
 
   return (
@@ -32,9 +34,7 @@ export default function TldrSection({ data }: TldrSectionProps) {
           </div>
           <div>
             <h2 className="section-title">TL;DR</h2>
-            <p className="section-subtitle">
-              Quick understanding before details
-            </p>
+            <p className="section-subtitle">Quick understanding before details</p>
           </div>
         </div>
 
@@ -45,12 +45,9 @@ export default function TldrSection({ data }: TldrSectionProps) {
       </div>
 
       <div className="card mb-5 p-6 md:p-7" style={{ borderLeft: '4px solid hsl(var(--accent-indigo) / 0.4)' }}>
-        {data.hook && (
-          <p className="emphasis-kicker mb-3">
-            {data.hook}
-          </p>
-        )}
+        {data.hook && <p className="emphasis-kicker mb-3">{data.hook}</p>}
         <RichParagraph text={data.summary} className="reading-lead" />
+        <ClaimEvidencePanel title="Show evidence for summary" citations={evidence?.tldrSummary ?? []} />
       </div>
 
       <div className="mb-5">
@@ -72,7 +69,13 @@ export default function TldrSection({ data }: TldrSectionProps) {
               <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--accent-indigo)/0.12)] text-xs font-bold" style={{ color: 'hsl(var(--accent-indigo))' }}>
                 {i + 1}
               </div>
-              <RichParagraph text={takeaway} className="reading-body" />
+              <div className="flex-1">
+                <RichParagraph text={takeaway} className="reading-body" />
+                <ClaimEvidencePanel
+                  title="Show evidence"
+                  citations={evidence?.tldrTakeaways.find((item) => item.claim === takeaway)?.citations ?? []}
+                />
+              </div>
             </motion.div>
           ))}
         </div>
@@ -87,6 +90,7 @@ export default function TldrSection({ data }: TldrSectionProps) {
             </span>
           </div>
           <RichParagraph text={data.whyItMatters} className="reading-body" />
+          <ClaimEvidencePanel title="Show evidence for impact" citations={evidence?.tldrWhyItMatters ?? []} />
         </div>
       )}
     </motion.section>

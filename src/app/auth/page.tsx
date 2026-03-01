@@ -2,19 +2,31 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { signIn, useSession } from 'next-auth/react';
-import { LogIn, UserPlus, Sparkles } from 'lucide-react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { getProviders, signIn, signOut, useSession } from 'next-auth/react';
+import type { ClientSafeProvider } from 'next-auth/react';
+import { Loader2, LogIn, UserPlus, Sparkles } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
+import ThemeToggle from '@/components/ThemeToggle';
 
 const EMAIL_HINT = 'name@example.com';
+
+function sanitizeNextPath(next: string | null): string {
+  if (!next) return '/dashboard';
+  if (!next.startsWith('/')) return '/dashboard';
+  if (next.startsWith('//')) return '/dashboard';
+  return next;
+}
 
 export default function AuthPage() {
   const { status } = useSession();
   const router = useRouter();
+  const redirectCheckedRef = useRef(false);
+
   const [callbackUrl] = useState(() => {
     if (typeof window === 'undefined') return '/dashboard';
     const next = new URLSearchParams(window.location.search).get('next');
-    return next || '/dashboard';
+    return sanitizeNextPath(next);
   });
 
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -23,6 +35,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [googleProvider, setGoogleProvider] = useState<ClientSafeProvider | null>(null);
 
   const title = useMemo(
     () => (mode === 'login' ? 'Welcome back' : 'Create your PaperLens account'),
@@ -30,17 +43,45 @@ export default function AuthPage() {
   );
 
   useEffect(() => {
-    if (status === 'authenticated') {
-      router.replace(callbackUrl);
-    }
-  }, [status, router, callbackUrl]);
+    const loadProviders = async () => {
+      const providers = await getProviders();
+      if (providers?.google) setGoogleProvider(providers.google);
+    };
 
-  if (status === 'authenticated') {
-    return null;
-  }
+    void loadProviders();
+  }, []);
+
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      redirectCheckedRef.current = false;
+      return;
+    }
+
+    if (status !== 'authenticated' || redirectCheckedRef.current) return;
+    redirectCheckedRef.current = true;
+
+    const validateAndRedirect = async () => {
+      try {
+        const response = await fetch('/api/user/dashboard', { cache: 'no-store' });
+        if (response.ok) {
+          router.replace(callbackUrl);
+          return;
+        }
+
+        await signOut({ redirect: false });
+        setError('Session expired or invalid. Please login again.');
+      } catch {
+        setError('Could not validate session. Please login again.');
+      }
+    };
+
+    void validateAndRedirect();
+  }, [status, router, callbackUrl]);
 
   const handleCredentials = async (event: FormEvent) => {
     event.preventDefault();
+    if (isSubmitting) return;
+
     setError('');
 
     if (!email || !password) {
@@ -66,7 +107,6 @@ export default function AuthPage() {
         const result = (await response.json()) as { success?: boolean; error?: string };
         if (!response.ok || !result.success) {
           setError(result.error || 'Could not create account.');
-          setIsSubmitting(false);
           return;
         }
       }
@@ -80,133 +120,182 @@ export default function AuthPage() {
 
       if (loginResult?.error) {
         setError('Invalid login credentials.');
-        setIsSubmitting(false);
         return;
       }
 
       router.push(callbackUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed.');
+    } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleGoogle = async () => {
+    if (!googleProvider || isSubmitting) return;
+
     setError('');
     setIsSubmitting(true);
-    await signIn('google', { callbackUrl });
+    try {
+      await signIn(googleProvider.id, { callbackUrl });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google sign in failed.');
+      setIsSubmitting(false);
+    }
   };
 
+  if (status === 'authenticated' && !error) {
+    return (
+      <main className="auth-pro-page min-h-screen">
+        <div className="mx-auto flex min-h-screen max-w-5xl items-center justify-center px-5 py-10">
+          <div className="auth-pro-card w-full max-w-xl p-8 text-center">
+            <p className="section-title">Finishing sign in...</p>
+            <p className="section-subtitle mt-2">Validating your session and opening dashboard.</p>
+            <div className="mt-4 inline-flex items-center gap-2 text-sm" style={{ color: 'hsl(var(--text-muted))' }}>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Please wait
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <main className="gradient-bg noise-overlay min-h-screen">
-      <div className="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center px-5 py-10">
-        <div className="card w-full max-w-xl p-6 sm:p-8">
-          <div className="mb-6 flex items-center justify-between gap-3">
-            <Link href="/" className="inline-flex items-center gap-2 text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
-              <Sparkles className="h-4 w-4" />
-              Back to PaperLens
-            </Link>
-            <div className="inline-flex rounded-xl border p-1" style={{ borderColor: 'hsl(var(--border))' }}>
-              <button
-                type="button"
-                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${mode === 'login' ? 'dashboard-nav-tab-active' : ''}`}
-                onClick={() => setMode('login')}
-              >
-                Login
-              </button>
-              <button
-                type="button"
-                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${mode === 'signup' ? 'dashboard-nav-tab-active' : ''}`}
-                onClick={() => setMode('signup')}
-              >
-                Sign up
-              </button>
+    <main className="auth-pro-page min-h-screen">
+      <div className="auth-pro-grid mx-auto flex min-h-screen max-w-5xl items-center justify-center px-5 py-10">
+        <div className="w-full max-w-xl">
+          <div className="mb-8 flex items-center justify-center gap-3">
+            <BrandMark size={50} />
+            <div>
+              <p className="brand-wordmark text-[2rem] leading-none">
+                <span className="brand-wordmark-paper">Paper</span>
+                <span className="brand-wordmark-play">Lens</span>
+              </p>
+              <p className="mt-1 text-center text-sm" style={{ color: 'hsl(var(--text-muted))' }}>
+                Research understanding, engineered for builders.
+              </p>
             </div>
           </div>
 
-          <h1 className="section-title mb-2">{title}</h1>
-          <p className="section-subtitle mb-6">
-            Access your personalized dashboard with recent papers, bookmarks, and tailored recommendations.
-          </p>
+          <div className="auth-pro-card p-6 sm:p-8">
+            <div className="mb-6 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Link
+                  href="/"
+                  className="inline-flex items-center gap-2 text-sm font-semibold"
+                  style={{ color: 'hsl(var(--text-secondary))' }}
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Back to Home
+                </Link>
+                <ThemeToggle />
+              </div>
 
-          <form onSubmit={handleCredentials} className="space-y-4">
-            {mode === 'signup' && (
+              <div className="auth-segmented">
+                <button
+                  type="button"
+                  className={`auth-segmented-btn ${mode === 'login' ? 'auth-segmented-btn-active' : ''}`}
+                  onClick={() => setMode('login')}
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  className={`auth-segmented-btn ${mode === 'signup' ? 'auth-segmented-btn-active' : ''}`}
+                  onClick={() => setMode('signup')}
+                >
+                  Sign up
+                </button>
+              </div>
+            </div>
+
+            <h1 className="section-title mb-2">{title}</h1>
+            <p className="section-subtitle mb-6">
+              Access your personalized dashboard, bookmarks, and paper recommendations.
+            </p>
+
+            <form onSubmit={handleCredentials} className="space-y-4">
+              {mode === 'signup' && (
+                <div>
+                  <label className="mb-1.5 block text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
+                    Name
+                  </label>
+                  <input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Your name"
+                    className="auth-input"
+                  />
+                </div>
+              )}
+
               <div>
                 <label className="mb-1.5 block text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
-                  Name
+                  Email
                 </label>
                 <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Your name"
-                  className="w-full rounded-xl border px-4 py-2.5 text-sm"
-                  style={{ borderColor: 'hsl(var(--border))', background: 'hsl(var(--bg-secondary))' }}
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder={EMAIL_HINT}
+                  autoComplete="email"
+                  className="auth-input"
                 />
               </div>
+
+              <div>
+                <label className="mb-1.5 block text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="At least 8 characters"
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  className="auth-input"
+                />
+              </div>
+
+              {error && (
+                <p
+                  className="rounded-xl border px-3 py-2 text-sm"
+                  style={{
+                    borderColor: 'hsl(var(--accent-rose) / 0.3)',
+                    color: 'hsl(var(--accent-rose))',
+                    background: 'hsl(var(--accent-rose) / 0.08)',
+                  }}
+                >
+                  {error}
+                </p>
+              )}
+
+              <button type="submit" disabled={isSubmitting} className="auth-submit-btn w-full justify-center">
+                {mode === 'login' ? <LogIn className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
+                {mode === 'login' ? 'Sign in' : 'Create account'}
+              </button>
+            </form>
+
+            {googleProvider && (
+              <>
+                <div className="my-5 flex items-center gap-3">
+                  <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
+                  <span
+                    className="text-xs font-semibold uppercase tracking-[0.08em]"
+                    style={{ color: 'hsl(var(--text-muted))' }}
+                  >
+                    Or continue with
+                  </span>
+                  <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
+                </div>
+
+                <button onClick={handleGoogle} disabled={isSubmitting} className="auth-social-btn w-full">
+                  Continue with Google
+                </button>
+              </>
             )}
-
-            <div>
-              <label className="mb-1.5 block text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
-                Email
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder={EMAIL_HINT}
-                autoComplete="email"
-                className="w-full rounded-xl border px-4 py-2.5 text-sm"
-                style={{ borderColor: 'hsl(var(--border))', background: 'hsl(var(--bg-secondary))' }}
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-semibold" style={{ color: 'hsl(var(--text-secondary))' }}>
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="At least 8 characters"
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                className="w-full rounded-xl border px-4 py-2.5 text-sm"
-                style={{ borderColor: 'hsl(var(--border))', background: 'hsl(var(--bg-secondary))' }}
-              />
-            </div>
-
-            {error && (
-              <p className="rounded-xl border px-3 py-2 text-sm" style={{ borderColor: 'hsl(var(--accent-rose) / 0.3)', color: 'hsl(var(--accent-rose))', background: 'hsl(var(--accent-rose) / 0.08)' }}>
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="landing-cta-primary w-full justify-center"
-            >
-              {mode === 'login' ? <LogIn className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
-              {mode === 'login' ? 'Login with Email' : 'Create Account'}
-            </button>
-          </form>
-
-          <div className="my-5 flex items-center gap-3">
-            <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
-            <span className="text-xs font-semibold uppercase tracking-[0.08em]" style={{ color: 'hsl(var(--text-muted))' }}>
-              Or
-            </span>
-            <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
           </div>
-
-          <button
-            onClick={handleGoogle}
-            disabled={isSubmitting}
-            className="w-full rounded-xl border px-4 py-2.5 text-sm font-semibold"
-            style={{ borderColor: 'hsl(var(--border))', color: 'hsl(var(--text-primary))', background: 'hsl(var(--bg-secondary))' }}
-          >
-            Continue with Google
-          </button>
         </div>
       </div>
     </main>

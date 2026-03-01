@@ -3,11 +3,13 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, GraduationCap, Code2, Atom } from 'lucide-react';
-import { Explanations } from '@/lib/types';
+import type { AnalysisEvidence, Explanations } from '@/lib/types';
 import { RichParagraph } from './RichText';
+import ClaimEvidencePanel from './ClaimEvidencePanel';
 
 interface ExplanationTabsProps {
   data: Explanations;
+  evidence?: AnalysisEvidence['explanations'];
 }
 
 const tabs = [
@@ -16,7 +18,7 @@ const tabs = [
   { key: 'deep' as const, label: 'Deep Technical', icon: Atom, color: '265 77% 60%' },
 ];
 
-export default function ExplanationTabs({ data }: ExplanationTabsProps) {
+export default function ExplanationTabs({ data, evidence }: ExplanationTabsProps) {
   const [active, setActive] = useState<'eli15' | 'engineer' | 'deep'>('eli15');
 
   const contentMap = {
@@ -24,6 +26,13 @@ export default function ExplanationTabs({ data }: ExplanationTabsProps) {
     engineer: data.engineer,
     deep: data.deepTechnical,
   };
+
+  const evidenceMap = {
+    eli15: evidence?.eli15 ?? [],
+    engineer: evidence?.engineer ?? [],
+    deep: evidence?.deepTechnical ?? [],
+  };
+
   const paragraphs = contentMap[active]
     .split(/\n\s*\n/g)
     .map((p) => p.trim())
@@ -44,9 +53,7 @@ export default function ExplanationTabs({ data }: ExplanationTabsProps) {
         </div>
         <div>
           <h2 className="section-title">Explanations</h2>
-          <p className="section-subtitle">
-            Choose your level of depth
-          </p>
+          <p className="section-subtitle">Choose your level of depth</p>
         </div>
       </div>
 
@@ -86,7 +93,9 @@ export default function ExplanationTabs({ data }: ExplanationTabsProps) {
             {activeTab?.label}
           </p>
 
-          <div className="space-y-3.5">
+          <ClaimEvidencePanel title="Show evidence for this explanation" citations={evidenceMap[active]} />
+
+          <div className="mt-3.5 space-y-3.5">
             {paragraphs.map((paragraph, index) => (
               <div
                 key={index}
