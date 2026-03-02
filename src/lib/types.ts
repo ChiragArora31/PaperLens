@@ -85,6 +85,68 @@ export interface WhyCareData {
   whyItsCool: string;
 }
 
+export interface SimilarPaper {
+  arxivId: string;
+  title: string;
+  summary: string;
+  categories: string[];
+  published: string;
+  url: string;
+  similarityScore?: number;
+}
+
+export interface CitationSnippet {
+  page: number;
+  text: string;
+  score?: number;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ClaimEvidence {
+  claim: string;
+  citations: CitationSnippet[];
+}
+
+export interface AnalysisEvidence {
+  tldrSummary: CitationSnippet[];
+  tldrWhyItMatters: CitationSnippet[];
+  tldrTakeaways: ClaimEvidence[];
+  explanations: {
+    eli15: CitationSnippet[];
+    engineer: CitationSnippet[];
+    deepTechnical: CitationSnippet[];
+  };
+}
+
+export type ExtractionSource = 'pdf' | 'ar5iv_html' | 'arxiv_html' | 'metadata_fallback';
+
+export interface AnalysisReliability {
+  score: number;
+  level: 'High' | 'Medium' | 'Low';
+  source: ExtractionSource;
+  modelMode: 'model' | 'fallback';
+  extractedChars: number;
+  evidenceCoverage: number;
+  notes: string[];
+}
+
+export interface ImplementationArchitectureStep {
+  step: string;
+  detail: string;
+}
+
+export interface ImplementationPlaybook {
+  quickStart: string[];
+  architectureSteps: ImplementationArchitectureStep[];
+  pseudocode: string;
+  commonBugs: string[];
+  evaluationChecklist: string[];
+}
+
 export interface PaperAnalysis {
   metadata: PaperMetadata;
   tldr: TldrData;
@@ -95,6 +157,10 @@ export interface PaperAnalysis {
   sections: PaperSection[];
   learningPath: LearningPath;
   whyCare: WhyCareData;
+  implementationPlaybook: ImplementationPlaybook;
+  reliability: AnalysisReliability;
+  evidence: AnalysisEvidence;
+  similarPapers?: SimilarPaper[];
 }
 
 export interface AnalyzeRequest {

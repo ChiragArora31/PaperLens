@@ -11,9 +11,9 @@ function applyTheme(theme: Theme) {
 
 export default function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return 'light';
+    if (typeof window === 'undefined') return 'dark';
     const saved = localStorage.getItem('paperlens_theme') as Theme | null;
-    return saved ?? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    return saved ?? 'dark';
   });
 
   useEffect(() => {

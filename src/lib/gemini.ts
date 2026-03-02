@@ -9,6 +9,9 @@ import {
   SummarySuite,
   LearningPath,
   WhyCareData,
+  ImplementationPlaybook,
+  AnalysisEvidence,
+  AnalysisReliability,
 } from './types';
 
 const ANALYSIS_PROMPT = `You are PaperLens, an elite AI research learning designer.
@@ -78,6 +81,15 @@ Return ONLY valid JSON (no markdown fences) with this exact shape:
     "useCases": ["3-6 practical use-cases"],
     "companiesUsing": ["Known companies or labs"],
     "whyItsCool": "What makes it exciting"
+  },
+  "implementationPlaybook": {
+    "quickStart": ["3-5 immediate steps to implement"],
+    "architectureSteps": [
+      { "step": "Step title", "detail": "What to build and why" }
+    ],
+    "pseudocode": "Language-agnostic pseudocode block",
+    "commonBugs": ["4-6 common implementation bugs"],
+    "evaluationChecklist": ["4-6 concrete eval checks"]
   }
 }
 
@@ -85,10 +97,11 @@ Rules:
 1. Concepts: produce 6-10 strong concept cards.
 2. Keep jargon low in summaries, high precision in deep section.
 3. Focus on actionable learning value and retention.
-4. Avoid backslashes in normal prose text.
-5. No filler text.
-6. Never output placeholder text like "no content provided" or "cannot be determined".
-7. If source text is limited, still produce the best possible concrete learning breakdown.
+4. Include a practical implementation playbook.
+5. Avoid backslashes in normal prose text.
+6. No filler text.
+7. Never output placeholder text like "no content provided" or "cannot be determined".
+8. If source text is limited, still produce the best possible concrete learning breakdown.
 
 PAPER TEXT:
 `;
@@ -572,6 +585,112 @@ function defaultWhyCare(): WhyCareData {
   };
 }
 
+function defaultEvidence(): AnalysisEvidence {
+  return {
+    tldrSummary: [],
+    tldrWhyItMatters: [],
+    tldrTakeaways: [],
+    explanations: {
+      eli15: [],
+      engineer: [],
+      deepTechnical: [],
+    },
+  };
+}
+
+function defaultReliability(): AnalysisReliability {
+  return {
+    score: 60,
+    level: 'Medium',
+    source: 'metadata_fallback',
+    modelMode: 'model',
+    extractedChars: 0,
+    evidenceCoverage: 0,
+    notes: ['Reliability will be updated by the analysis API pipeline.'],
+  };
+}
+
+function normalizeImplementation(
+  raw: unknown,
+  concepts: Concept[],
+  sections: PaperSection[]
+): ImplementationPlaybook {
+  const base = (raw ?? {}) as Record<string, unknown>;
+
+  const quickStart = cleanNarrativeArray(base.quickStart, [
+    'Read TL;DR and one-minute summary before coding.',
+    'Map method components using the visual diagrams.',
+    'Implement a minimal baseline before full architecture.',
+    'Validate with one small test split first.',
+  ]);
+
+  const architectureRaw = Array.isArray(base.architectureSteps) ? base.architectureSteps : [];
+  const architectureSteps = architectureRaw
+    .map((item, index) => {
+      const candidate = (item ?? {}) as Record<string, unknown>;
+      return {
+        step: cleanNarrative(candidate.step, `Architecture Step ${index + 1}`),
+        detail: cleanNarrative(candidate.detail, ''),
+      };
+    })
+    .filter((item) => item.detail.length > 0)
+    .slice(0, 8);
+
+  const derivedArchitecture =
+    architectureSteps.length > 0
+      ? architectureSteps
+      : ensureMinimumContent(
+          sections.slice(0, 5).map((section, index) => ({
+            step: `Phase ${index + 1}: ${section.title}`,
+            detail:
+              section.keyPoints[0] ??
+              section.simplified.slice(0, 180) ??
+              'Implement and validate this stage incrementally.',
+          })),
+          concepts.slice(0, 4).map((concept, index) => ({
+            step: `Module ${index + 1}: ${concept.name}`,
+            detail: concept.whyImportant || concept.intuition,
+          }))
+        );
+
+  const pseudocode = cleanNarrative(
+    base.pseudocode,
+    [
+      'initialize model_components, optimizer, metrics',
+      'for epoch in training_epochs:',
+      '  batch = load_batch(dataset)',
+      '  representations = encode_inputs(batch)',
+      '  predictions = model_forward(representations)',
+      '  loss = objective(predictions, batch.targets)',
+      '  backpropagate(loss)',
+      '  optimizer_step()',
+      '  evaluate_on_validation_set()',
+    ].join('\n')
+  );
+
+  const commonBugs = cleanNarrativeArray(base.commonBugs, [
+    'Input preprocessing mismatch between training and inference.',
+    'Incorrect masking or attention dimensions in tensor operations.',
+    'Evaluation metric implementation not aligned with paper protocol.',
+    'Data leakage between train and validation splits.',
+  ]);
+
+  const evaluationChecklist = cleanNarrativeArray(base.evaluationChecklist, [
+    'Reproduce one headline metric with the same split and setup.',
+    'Run ablations for critical components claimed as novel.',
+    'Measure latency and memory footprint under realistic batch sizes.',
+    'Verify failure cases and limitations mentioned in the paper.',
+  ]);
+
+  return {
+    quickStart: quickStart.slice(0, 6),
+    architectureSteps: derivedArchitecture.slice(0, 8),
+    pseudocode,
+    commonBugs: commonBugs.slice(0, 8),
+    evaluationChecklist: evaluationChecklist.slice(0, 8),
+  };
+}
+
 function normalizeExplanations(raw: unknown, summary: string): {
   eli15: string;
   engineer: string;
@@ -622,6 +741,8 @@ function buildSafeAnalysis(parsed: Record<string, unknown>, metadata: PaperMetad
       ? summarySuiteCandidate
       : defaultSummarySuite(tldr.summary);
 
+  const implementationPlaybook = normalizeImplementation(parsed.implementationPlaybook, concepts, sections);
+
   return {
     metadata,
     tldr,
@@ -632,12 +753,75 @@ function buildSafeAnalysis(parsed: Record<string, unknown>, metadata: PaperMetad
     sections,
     learningPath: normalizeLearningPath(parsed.learningPath, sections),
     whyCare,
+    implementationPlaybook,
+    reliability: defaultReliability(),
+    evidence: defaultEvidence(),
   };
 }
 
 function parsedHasPlaceholderContent(parsed: Record<string, unknown>): boolean {
   const asText = JSON.stringify(parsed);
   return hasPlaceholderLanguage(asText);
+}
+
+function firstSentences(text: string, limit = 3): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  const parts = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, limit);
+  return parts.join(' ');
+}
+
+export function buildFallbackAnalysis(
+  paperText: string,
+  metadata: PaperMetadata,
+  reason?: string
+): PaperAnalysis {
+  const safe = buildSafeAnalysis({}, metadata);
+
+  const abstractSummary = firstSentences(metadata.abstract, 3);
+  const bodySummary = firstSentences(paperText, 3);
+  const summary =
+    abstractSummary ||
+    bodySummary ||
+    `This paper titled "${metadata.title}" introduces a method and evaluates it experimentally.`;
+
+  const fallbackNotes = [
+    'Generated with deterministic fallback pipeline for reliability.',
+    reason ? `Model fallback reason: ${reason}` : '',
+  ].filter(Boolean);
+
+  return {
+    ...safe,
+    tldr: {
+      ...safe.tldr,
+      summary,
+      keyTakeaways: safe.tldr.keyTakeaways.slice(0, 5),
+      whyItMatters:
+        safe.tldr.whyItMatters ||
+        'This work matters because it offers a concrete path to improve performance on a real research task.',
+    },
+    summarySuite: {
+      ...safe.summarySuite,
+      ultraShort: firstSentences(summary, 1) || safe.summarySuite.ultraShort,
+      oneMinute: summary,
+      fiveMinute: safe.summarySuite.fiveMinute || summary,
+      detailed: safe.summarySuite.detailed || summary,
+    },
+    explanations: {
+      eli15: safe.explanations.eli15 || summary,
+      engineer: safe.explanations.engineer || summary,
+      deepTechnical: safe.explanations.deepTechnical || summary,
+    },
+    reliability: {
+      ...safe.reliability,
+      modelMode: 'fallback',
+      notes: fallbackNotes,
+    },
+  };
 }
 
 export async function analyzePaper(

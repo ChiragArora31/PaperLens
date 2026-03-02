@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractArxivId, fetchArxivMetadata, fetchArxivPaperText } from '@/lib/arxiv';
-import { analyzePaper } from '@/lib/gemini';
+import { analyzePaper, buildFallbackAnalysis } from '@/lib/gemini';
+import { fetchSimilarPapersForMetadata } from '@/lib/recommendations';
+import { buildEvidenceForAnalysis, computeReliability } from '@/lib/analysisEnhancer';
+import type { PaperAnalysis, SimilarPaper } from '@/lib/types';
 
 export const maxDuration = 120;
 export const runtime = 'nodejs';
@@ -20,24 +23,13 @@ export async function POST(request: NextRequest) {
 
     const { arxivId } = body as { arxivId?: unknown };
     if (typeof arxivId !== 'string' || !arxivId.trim()) {
-      return NextResponse.json(
-        { success: false, error: 'arXiv ID is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, error: 'arXiv ID is required' }, { status: 400 });
     }
 
     if (arxivId.length > 256) {
       return NextResponse.json(
         { success: false, error: 'Input too long. Use only an arXiv URL or ID.' },
         { status: 400 }
-      );
-    }
-
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { success: false, error: 'Server API key is missing. Set GEMINI_API_KEY.' },
-        { status: 500 }
       );
     }
 
@@ -52,8 +44,63 @@ export async function POST(request: NextRequest) {
     const metadata = await fetchArxivMetadata(normalizedArxivId);
     const paperContent = await fetchArxivPaperText(normalizedArxivId, metadata);
     const paperText = paperContent.text;
+    const apiKey = process.env.GEMINI_API_KEY;
 
-    const analysis = await analyzePaper(paperText, metadata, apiKey);
+    let analysis: PaperAnalysis;
+    let modelMode: 'model' | 'fallback' = 'model';
+    let modelFallbackReason = '';
+
+    if (apiKey) {
+      try {
+        analysis = await analyzePaper(paperText, metadata, apiKey);
+      } catch (modelError) {
+        modelMode = 'fallback';
+        modelFallbackReason =
+          modelError instanceof Error ? modelError.message : 'Unknown model generation error.';
+        analysis = buildFallbackAnalysis(paperText, metadata, modelFallbackReason);
+      }
+    } else {
+      modelMode = 'fallback';
+      modelFallbackReason = 'Server GEMINI_API_KEY is missing.';
+      analysis = buildFallbackAnalysis(paperText, metadata, modelFallbackReason);
+    }
+
+    let similarPapers: SimilarPaper[] = [];
+    try {
+      similarPapers = await fetchSimilarPapersForMetadata(metadata, 3);
+    } catch (similarError) {
+      console.warn('Similar papers fetch failed:', similarError);
+    }
+
+    let evidence = analysis.evidence;
+    let evidenceCoverage = 0;
+    const evidenceNotes: string[] = [];
+    try {
+      const evidenceResult = await buildEvidenceForAnalysis({
+        arxivId: normalizedArxivId,
+        metadata,
+        analysis,
+      });
+      evidence = evidenceResult.evidence;
+      evidenceCoverage = evidenceResult.coverage;
+      evidenceNotes.push(...evidenceResult.notes);
+    } catch (evidenceError) {
+      evidenceNotes.push('Evidence mapping failed. Use direct section reading for verification.');
+      console.warn('Evidence mapping failed:', evidenceError);
+    }
+
+    const reliability = computeReliability({
+      source: paperContent.source,
+      modelMode,
+      extractedChars: paperText.length,
+      diagnostics: [
+        ...paperContent.diagnostics,
+        ...(modelFallbackReason ? [`Model fallback reason: ${modelFallbackReason}`] : []),
+        ...evidenceNotes,
+      ],
+      evidenceCoverage,
+      conceptCount: analysis.concepts.length,
+    });
 
     if (paperContent.source !== 'pdf') {
       console.warn('Paper text fallback source used:', {
@@ -65,7 +112,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      data: analysis,
+      data: {
+        ...analysis,
+        similarPapers,
+        evidence,
+        reliability,
+      },
     });
   } catch (error) {
     console.error('Analysis error:', error);

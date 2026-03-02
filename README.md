@@ -15,6 +15,8 @@ Instead of reading 20+ pages linearly, users get guided explanations, visual dia
 - Learning path with step goals and estimated time
 - Why-it-matters panel with use-cases and adoption context
 - Light and dark themes with responsive UI across desktop and mobile
+- Authentication: email/password + optional Google OAuth
+- Personalized dashboard with recent papers, bookmarks, and related recommendations
 
 ## Input model
 
@@ -30,6 +32,8 @@ Instead of reading 20+ pages linearly, users get guided explanations, visual dia
 - Mermaid
 - Framer Motion
 - Lucide Icons
+- NextAuth (JWT sessions)
+- SQLite (`better-sqlite3`) for user auth + personalization state
 
 ## Local setup
 
@@ -45,10 +49,20 @@ npm install
 cp .env.example .env.local
 ```
 
-3. Add your Gemini key to `.env.local`:
+3. Add required keys to `.env.local`:
 
 ```bash
 GEMINI_API_KEY=your_key_here
+DATABASE_PATH=data/paperlens.db
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=replace_with_a_strong_random_secret
+
+# Optional for Google login
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# AUTH_GOOGLE_ID=
+# AUTH_GOOGLE_SECRET=
+# AUTH_SECRET=
 ```
 
 4. Run the app:
@@ -89,6 +103,10 @@ npm run check
 src/
   app/
     api/analyze/route.ts      # analysis endpoint
+    api/auth/*                # login/signup/session APIs
+    api/user/*                # recent/bookmark/dashboard APIs
+    auth/page.tsx             # login/signup UI
+    dashboard/page.tsx        # personalized dashboard UI
     page.tsx                  # landing + orchestration
   components/
     HeroInput.tsx
@@ -103,7 +121,8 @@ src/
 ## Deploy notes
 
 - Recommended Node.js: `>=20.11.0`
-- Set `GEMINI_API_KEY` in your deployment environment
+- Set `GEMINI_API_KEY`, `DATABASE_PATH`, `NEXTAUTH_URL`, and `NEXTAUTH_SECRET` in your deployment environment
+- Add `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (or `AUTH_GOOGLE_ID` + `AUTH_GOOGLE_SECRET`) if Google OAuth is enabled
 - Run `npm run build` in CI before release
 
 ---
