@@ -2,7 +2,13 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
-import { isBookmarked, listBookmarks, removeBookmark, upsertBookmark } from '@/lib/db';
+import {
+  ensureSessionUser,
+  isBookmarked,
+  listBookmarks,
+  removeBookmark,
+  upsertBookmark,
+} from '@/lib/db';
 
 const bookmarkSchema = z.object({
   arxivId: z.string().min(1).max(64),
@@ -15,7 +21,13 @@ const bookmarkSchema = z.object({
 export async function GET(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const user = ensureSessionUser({
+      id: session?.user?.id,
+      email: session?.user?.email,
+      name: session?.user?.name,
+      image: session?.user?.image,
+    });
+    const userId = user?.id;
 
     if (!userId) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
@@ -44,7 +56,13 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const user = ensureSessionUser({
+      id: session?.user?.id,
+      email: session?.user?.email,
+      name: session?.user?.name,
+      image: session?.user?.image,
+    });
+    const userId = user?.id;
 
     if (!userId) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
@@ -74,7 +92,13 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const user = ensureSessionUser({
+      id: session?.user?.id,
+      email: session?.user?.email,
+      name: session?.user?.name,
+      image: session?.user?.image,
+    });
+    const userId = user?.id;
 
     if (!userId) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });

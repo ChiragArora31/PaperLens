@@ -173,6 +173,15 @@ const updateOAuthUserStmt = db.prepare(
    WHERE id = ?`
 );
 
+const updateSessionUserStmt = db.prepare(
+  `UPDATE users
+   SET name = COALESCE(?, name),
+       image = COALESCE(?, image),
+       auth_provider = ?,
+       updated_at = ?
+   WHERE id = ?`
+);
+
 const upsertRecentStmt = db.prepare(
   `INSERT INTO recent_papers (user_id, arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -383,6 +392,67 @@ export function ensureOAuthUser(input: {
     if (error instanceof DuplicateEmailError) {
       // Race-safe fallback when two OAuth callbacks land simultaneously.
       return getUserByEmail(email) ?? (() => { throw error; })();
+    }
+    throw error;
+  }
+}
+
+export function ensureSessionUser(input: {
+  id?: string | null;
+  email?: string | null;
+  name?: string | null;
+  image?: string | null;
+  provider?: string;
+}): AppUser | null {
+  const email = cleanString(input.email ?? '').toLowerCase();
+  if (!email) return null;
+
+  const preferredId = input.id ? cleanString(input.id) : null;
+
+  if (preferredId) {
+    const existingById = getUserById(preferredId);
+    if (existingById) {
+      updateSessionUserStmt.run(
+        input.name ? cleanString(input.name) : null,
+        input.image ?? null,
+        input.provider ?? existingById.provider,
+        nowIso(),
+        preferredId
+      );
+      return getUserById(preferredId) ?? existingById;
+    }
+  }
+
+  const existingByEmail = getUserByEmail(email);
+  if (existingByEmail) {
+    updateSessionUserStmt.run(
+      input.name ? cleanString(input.name) : null,
+      input.image ?? null,
+      input.provider ?? existingByEmail.provider,
+      nowIso(),
+      existingByEmail.id
+    );
+    return getUserById(existingByEmail.id) ?? existingByEmail;
+  }
+
+  const now = nowIso();
+  const userId = preferredId ?? randomUUID();
+
+  try {
+    insertUserStmt.run(
+      userId,
+      email,
+      input.name ? cleanString(input.name) : null,
+      null,
+      input.provider ?? 'credentials',
+      input.image ?? null,
+      now,
+      now
+    );
+    return getUserById(userId);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      return getUserByEmail(email);
     }
     throw error;
   }

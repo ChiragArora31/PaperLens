@@ -23,6 +23,7 @@ import {
   Target,
   ShieldCheck,
   Code2,
+  LayoutDashboard,
 } from 'lucide-react';
 import { PaperAnalysis } from '@/lib/types';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -117,6 +118,7 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
   const [activeSection, setActiveSection] = useState<SectionId>('tldr');
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [bookmarkLoading, setBookmarkLoading] = useState(false);
+  const [bookmarkError, setBookmarkError] = useState('');
   const { data: session, status: sessionStatus } = useSession();
 
   const meta = analysis.metadata;
@@ -156,15 +158,28 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
   }, [session?.user?.id, meta.id]);
 
   const toggleBookmark = async () => {
-    if (!session?.user?.id || !meta.id || bookmarkLoading) return;
+    if (!meta.id || bookmarkLoading) return;
+    if (!session?.user?.id) {
+      setBookmarkError('Please login to bookmark this paper.');
+      return;
+    }
 
+    setBookmarkError('');
     setBookmarkLoading(true);
     try {
       if (isBookmarked) {
         const response = await fetch(`/api/user/bookmarks?arxivId=${encodeURIComponent(meta.id)}`, {
           method: 'DELETE',
         });
-        if (response.ok) setIsBookmarked(false);
+        if (response.ok) {
+          setIsBookmarked(false);
+          return;
+        }
+
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        setBookmarkError(payload?.error || 'Could not remove bookmark. Please retry.');
         return;
       }
 
@@ -180,7 +195,15 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
         }),
       });
 
-      if (response.ok) setIsBookmarked(true);
+      if (response.ok) {
+        setIsBookmarked(true);
+        return;
+      }
+
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      setBookmarkError(payload?.error || 'Could not save bookmark. Please retry.');
+    } catch {
+      setBookmarkError('Could not update bookmark right now. Please retry.');
     } finally {
       setBookmarkLoading(false);
     }
@@ -277,6 +300,12 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
             </div>
 
             <div className="flex items-center gap-2">
+              {sessionStatus === 'authenticated' && (
+                <Link href="/dashboard" className="stat-pill" style={{ textDecoration: 'none' }}>
+                  <LayoutDashboard className="h-3.5 w-3.5" />
+                  Dashboard
+                </Link>
+              )}
               <ThemeToggle />
             </div>
           </div>
@@ -348,6 +377,15 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
                   )}
                 </div>
               </div>
+
+              {bookmarkError && (
+                <p
+                  className="mt-3 text-sm font-medium"
+                  style={{ color: 'hsl(var(--accent-rose))' }}
+                >
+                  {bookmarkError}
+                </p>
+              )}
 
               <div className="mt-4 flex flex-wrap items-center gap-2.5">
                 {meta.authors.length > 0 && (
