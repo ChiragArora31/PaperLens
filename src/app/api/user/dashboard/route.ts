@@ -1,13 +1,19 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { listBookmarks, listRecentPapers } from '@/lib/db';
+import { ensureSessionUser, listBookmarks, listRecentPapers } from '@/lib/db';
 import { fetchRecommendedPapers } from '@/lib/recommendations';
 
 export async function GET() {
   try {
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const user = ensureSessionUser({
+      id: session?.user?.id,
+      email: session?.user?.email,
+      name: session?.user?.name,
+      image: session?.user?.image,
+    });
+    const userId = user?.id;
 
     if (!userId) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });

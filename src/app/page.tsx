@@ -55,7 +55,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [error, setError] = useState('');
-  const { data: session, status: sessionStatus } = useSession();
+  const { status: sessionStatus } = useSession();
 
   useEffect(() => {
     if (!isLoading) {
@@ -94,19 +94,19 @@ export default function Home() {
       if (response.ok && result.success && result.data) {
         setAnalysis(result.data);
 
-        if (session?.user?.id) {
-          void fetch('/api/user/recent', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              arxivId: result.data.metadata.id,
-              title: result.data.metadata.title,
-              abstract: result.data.metadata.abstract,
-              authors: result.data.metadata.authors,
-              categories: result.data.metadata.categories,
-            }),
-          });
-        }
+        void fetch('/api/user/recent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            arxivId: result.data.metadata.id,
+            title: result.data.metadata.title,
+            abstract: result.data.metadata.abstract,
+            authors: result.data.metadata.authors,
+            categories: result.data.metadata.categories,
+          }),
+        }).catch(() => {
+          // Best-effort tracking only. Analysis UX should not be blocked by recent tracking failures.
+        });
       } else {
         const fallback =
           response.status >= 500

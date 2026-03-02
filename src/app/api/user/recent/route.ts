@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
-import { upsertRecentPaper } from '@/lib/db';
+import { ensureSessionUser, upsertRecentPaper } from '@/lib/db';
 
 const recentSchema = z.object({
   arxivId: z.string().min(1).max(64),
@@ -15,7 +15,13 @@ const recentSchema = z.object({
 export async function POST(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const user = ensureSessionUser({
+      id: session?.user?.id,
+      email: session?.user?.email,
+      name: session?.user?.name,
+      image: session?.user?.image,
+    });
+    const userId = user?.id;
     if (!userId) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
