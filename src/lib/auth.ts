@@ -12,7 +12,11 @@ const credentialsSchema = z.object({
 
 const authSecret =
   process.env.NEXTAUTH_SECRET ||
+  process.env.AUTH_SECRET ||
   (process.env.NODE_ENV !== 'production' ? 'paperlens-dev-secret-change-me' : undefined);
+
+const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.AUTH_GOOGLE_ID;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || process.env.AUTH_GOOGLE_SECRET;
 
 const providers: NextAuthOptions['providers'] = [
   CredentialsProvider({
@@ -42,11 +46,11 @@ const providers: NextAuthOptions['providers'] = [
   }),
 ];
 
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+if (googleClientId && googleClientSecret) {
   providers.unshift(
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      clientId: googleClientId,
+      clientSecret: googleClientSecret,
     })
   );
 }

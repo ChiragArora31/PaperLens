@@ -32,7 +32,7 @@ export default function HeroInput({ onAnalyze, isLoading }: HeroInputProps) {
 
     const arxivId = extractArxivId(trimmed);
     if (!arxivId) {
-      setError('Use format like 1706.03762 or https://arxiv.org/abs/1706.03762');
+      setError('Use a valid arXiv ID or URL, e.g. 1706.03762, /abs, /pdf, or /html links.');
       return;
     }
 

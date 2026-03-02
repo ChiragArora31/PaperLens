@@ -1328,13 +1328,29 @@ input:focus-visible {
 }
 
 .auth-social-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   border-radius: 12px;
   border: 1px solid hsl(var(--border));
-  background: hsl(var(--bg-secondary) / 0.52);
+  background: hsl(var(--bg-secondary) / 0.6);
   color: hsl(var(--text-primary));
   padding: 10px 12px;
   font-size: 0.9rem;
-  font-weight: 670;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.auth-social-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: hsl(var(--border-accent) / 0.45);
+  background: hsl(var(--bg-tertiary) / 0.95);
+}
+
+.auth-social-btn:disabled {
+  opacity: 0.78;
+  cursor: not-allowed;
 }
 
 @media (max-width: 1023px) {

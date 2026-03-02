@@ -11,11 +11,48 @@ import ThemeToggle from '@/components/ThemeToggle';
 
 const EMAIL_HINT = 'name@example.com';
 
+function GoogleLogo() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path
+        fill="#EA4335"
+        d="M12 10.2v3.91h5.43c-.24 1.26-.95 2.32-2.03 3.03l3.28 2.54c1.91-1.76 3.01-4.34 3.01-7.38 0-.71-.06-1.39-.18-2.05H12Z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 22c2.7 0 4.97-.9 6.63-2.43l-3.28-2.54c-.9.61-2.05.98-3.35.98-2.58 0-4.77-1.74-5.55-4.08l-3.39 2.61A10.01 10.01 0 0 0 12 22Z"
+      />
+      <path
+        fill="#4A90E2"
+        d="M6.45 13.93a5.98 5.98 0 0 1 0-3.86l-3.39-2.61a10 10 0 0 0 0 9.08l3.39-2.61Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M12 5.99c1.47 0 2.8.51 3.84 1.5l2.88-2.88C16.96 2.98 14.7 2 12 2A10.01 10.01 0 0 0 3.06 7.46l3.39 2.61c.78-2.34 2.97-4.08 5.55-4.08Z"
+      />
+    </svg>
+  );
+}
+
 function sanitizeNextPath(next: string | null): string {
   if (!next) return '/dashboard';
   if (!next.startsWith('/')) return '/dashboard';
   if (next.startsWith('//')) return '/dashboard';
   return next;
+}
+
+function mapOAuthError(errorCode: string): string {
+  const normalized = errorCode.toLowerCase();
+  if (normalized.includes('oauthaccountnotlinked')) {
+    return 'This email is already linked to another login method. Sign in with your original method first.';
+  }
+  if (normalized.includes('oauthsignin') || normalized.includes('oauthcallback')) {
+    return 'Google sign-in could not complete. Check callback URL and Google OAuth credentials.';
+  }
+  if (normalized.includes('accessdenied')) {
+    return 'Google sign-in was cancelled or denied.';
+  }
+  return 'Authentication could not be completed. Please try again.';
 }
 
 export default function AuthPage() {
@@ -36,6 +73,7 @@ export default function AuthPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [googleProvider, setGoogleProvider] = useState<ClientSafeProvider | null>(null);
+  const [googleState, setGoogleState] = useState<'loading' | 'available' | 'unavailable'>('loading');
 
   const title = useMemo(
     () => (mode === 'login' ? 'Welcome back' : 'Create your PaperLens account'),
@@ -44,11 +82,30 @@ export default function AuthPage() {
 
   useEffect(() => {
     const loadProviders = async () => {
-      const providers = await getProviders();
-      if (providers?.google) setGoogleProvider(providers.google);
+      try {
+        const providers = await getProviders();
+        if (providers?.google) {
+          setGoogleProvider(providers.google);
+          setGoogleState('available');
+          return;
+        }
+      } catch {
+        // Keep a graceful fallback state.
+      }
+
+      setGoogleProvider(null);
+      setGoogleState('unavailable');
     };
 
     void loadProviders();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const oauthError = new URLSearchParams(window.location.search).get('error');
+    if (oauthError) {
+      setError(mapOAuthError(oauthError));
+    }
   }, []);
 
   useEffect(() => {
@@ -132,7 +189,14 @@ export default function AuthPage() {
   };
 
   const handleGoogle = async () => {
-    if (!googleProvider || isSubmitting) return;
+    if (isSubmitting) return;
+
+    if (!googleProvider) {
+      setError(
+        'Google sign-in is not configured on this deployment. Set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET (or AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET).'
+      );
+      return;
+    }
 
     setError('');
     setIsSubmitting(true);
@@ -277,23 +341,39 @@ export default function AuthPage() {
               </button>
             </form>
 
-            {googleProvider && (
-              <>
-                <div className="my-5 flex items-center gap-3">
-                  <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
-                  <span
-                    className="text-xs font-semibold uppercase tracking-[0.08em]"
-                    style={{ color: 'hsl(var(--text-muted))' }}
-                  >
-                    Or continue with
-                  </span>
-                  <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
-                </div>
+            <div className="my-5 flex items-center gap-3">
+              <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
+              <span
+                className="text-xs font-semibold uppercase tracking-[0.08em]"
+                style={{ color: 'hsl(var(--text-muted))' }}
+              >
+                OR
+              </span>
+              <div className="h-px flex-1" style={{ background: 'hsl(var(--border))' }} />
+            </div>
 
-                <button onClick={handleGoogle} disabled={isSubmitting} className="auth-social-btn w-full">
+            <button
+              onClick={handleGoogle}
+              disabled={isSubmitting || googleState === 'loading'}
+              className="auth-social-btn w-full"
+            >
+              {googleState === 'loading' ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Checking Google sign-in...
+                </>
+              ) : (
+                <>
+                  <GoogleLogo />
                   Continue with Google
-                </button>
-              </>
+                </>
+              )}
+            </button>
+
+            {googleState === 'unavailable' && (
+              <p className="mt-2 text-xs" style={{ color: 'hsl(var(--text-muted))' }}>
+                Google sign-in is currently unavailable in this deployment configuration.
+              </p>
             )}
           </div>
         </div>

@@ -10,7 +10,12 @@ interface ExportBody {
 }
 
 function cleanText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  if (typeof value !== 'string') return '';
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\t\n\r\x20-\x7E\xA0-\xFF]/g, ' ');
+  return normalized.replace(/\s+/g, ' ').trim();
 }
 
 function ensureArray(value: unknown): string[] {

@@ -129,16 +129,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, data: fallback });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.35,
-      },
-    });
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.35,
+        },
+      });
 
-    const prompt = `Create a podcast script for this research paper.
+      const prompt = `Create a podcast script for this research paper.
 Return JSON only with this shape:
 {
   "title": "...",
@@ -157,31 +158,37 @@ TLDR: ${fallback.segments[0].content}
 Key takeaways: ${keyTakeaways.join(' | ')}
 Engineer lens: ${fallback.segments[2].content}`;
 
-    const response = await model.generateContent(prompt);
-    const parsed = parseLooseJson(response.response.text());
+      const response = await model.generateContent(prompt);
+      const parsed = parseLooseJson(response.response.text());
 
-    if (!parsed || !Array.isArray(parsed.segments) || parsed.segments.length === 0) {
+      if (!parsed || !Array.isArray(parsed.segments) || parsed.segments.length === 0) {
+        return NextResponse.json({ success: true, data: fallback });
+      }
+
+      const normalized: PodcastPayload = {
+        title: normalizeText(parsed.title) || fallback.title,
+        intro: normalizeText(parsed.intro) || fallback.intro,
+        segments: parsed.segments
+          .map((segment) => ({
+            speaker: normalizeText(segment.speaker) || 'Host',
+            content: normalizeText(segment.content),
+          }))
+          .filter((segment) => segment.content.length > 0)
+          .slice(0, 7),
+        outro: normalizeText(parsed.outro) || fallback.outro,
+      };
+
+      if (normalized.segments.length === 0) {
+        return NextResponse.json({ success: true, data: fallback });
+      }
+
+      return NextResponse.json({ success: true, data: normalized });
+    } catch (modelError) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('Podcast generation fallback triggered:', modelError);
+      }
       return NextResponse.json({ success: true, data: fallback });
     }
-
-    const normalized: PodcastPayload = {
-      title: normalizeText(parsed.title) || fallback.title,
-      intro: normalizeText(parsed.intro) || fallback.intro,
-      segments: parsed.segments
-        .map((segment) => ({
-          speaker: normalizeText(segment.speaker) || 'Host',
-          content: normalizeText(segment.content),
-        }))
-        .filter((segment) => segment.content.length > 0)
-        .slice(0, 7),
-      outro: normalizeText(parsed.outro) || fallback.outro,
-    };
-
-    if (normalized.segments.length === 0) {
-      return NextResponse.json({ success: true, data: fallback });
-    }
-
-    return NextResponse.json({ success: true, data: normalized });
   } catch (error) {
     console.error('Podcast route error:', error);
     return NextResponse.json(

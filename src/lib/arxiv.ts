@@ -7,6 +7,9 @@ const ARXIV_USER_AGENT = 'PaperLens/1.0';
 const MIN_MEANINGFUL_PAPER_TEXT_CHARS = 1200;
 
 type ContentSource = 'pdf' | 'ar5iv_html' | 'arxiv_html' | 'metadata_fallback';
+const ARXIV_ID_PATTERN =
+  /^((?:[a-z-]+(?:\.[a-z-]+)?\/\d{7}(?:v\d+)?)|\d{4}\.\d{4,6}(?:v\d+)?)$/i;
+const ARXIV_HOST_PATTERN = /(^|\.)arxiv\.org$|(^|\.)ar5iv\.org$|(^|\.)export\.arxiv\.org$/i;
 
 export interface ArxivPaperTextResult {
   text: string;
@@ -37,15 +40,26 @@ function stripVersionSuffix(arxivId: string): string {
 }
 
 function normalizeArxivId(arxivId: string): string {
-  return arxivId
+  const withoutArtifacts = arxivId
     .trim()
     .replace(/^arxiv:\s*/i, '')
+    .replace(/^[<(["']+/, '')
+    .replace(/[>\])"';:,.]+$/, '')
     .replace(/\/+$/, '')
+    .replace(/\.html?$/i, '')
+    .replace(/\.ps\.gz$/i, '')
+    .replace(/\.gz$/i, '')
     .replace(/\.pdf$/i, '');
+
+  try {
+    return decodeURIComponent(withoutArtifacts);
+  } catch {
+    return withoutArtifacts;
+  }
 }
 
 function isValidArxivId(arxivId: string): boolean {
-  return /^([a-z][a-z.\-]+\/\d{7}|\d{4}\.\d{4,5}(?:v\d+)?)$/i.test(arxivId);
+  return ARXIV_ID_PATTERN.test(arxivId);
 }
 
 function extractMetaContent(html: string, name: string): string[] {
@@ -284,6 +298,81 @@ async function tryFetchHtmlPaperText(arxivId: string): Promise<{ text: string; s
   return null;
 }
 
+function stripQueryAndHash(value: string): string {
+  return value.split(/[?#]/, 1)[0] ?? '';
+}
+
+function parseArxivIdFromPathname(pathname: string): string | null {
+  const cleanedPath = stripQueryAndHash(pathname).replace(/^\/+|\/+$/g, '');
+  if (!cleanedPath) return null;
+
+  const segments = cleanedPath.split('/').filter(Boolean);
+  if (segments.length === 0) return null;
+
+  const first = segments[0]?.toLowerCase();
+  const prefixes = new Set(['abs', 'pdf', 'html', 'format', 'e-print', 'src']);
+
+  const rawCandidate = prefixes.has(first)
+    ? segments.slice(1).join('/')
+    : segments.join('/');
+  if (!rawCandidate) return null;
+
+  const normalized = normalizeArxivId(rawCandidate);
+  return isValidArxivId(normalized) ? normalized : null;
+}
+
+function parseArxivIdFromUrl(input: string): string | null {
+  const hasProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(input);
+  const candidateUrl = hasProtocol ? input : `https://${input}`;
+
+  try {
+    const parsed = new URL(candidateUrl);
+    if (!ARXIV_HOST_PATTERN.test(parsed.hostname)) {
+      return null;
+    }
+
+    const fromPath = parseArxivIdFromPathname(parsed.pathname);
+    if (fromPath) return fromPath;
+
+    for (const key of ['id', 'arxivId', 'paper']) {
+      const value = parsed.searchParams.get(key);
+      if (!value) continue;
+      const normalized = normalizeArxivId(value);
+      if (isValidArxivId(normalized)) return normalized;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function parseArxivIdFromFreeform(input: string): string | null {
+  const match = input.match(
+    /((?:[a-z-]+(?:\.[a-z-]+)?\/\d{7}(?:v\d+)?)|(?:\d{4}\.\d{4,6}(?:v\d+)?))/i
+  );
+  if (!match?.[1]) return null;
+  const normalized = normalizeArxivId(match[1]);
+  return isValidArxivId(normalized) ? normalized : null;
+}
+
+function parseArxivIdFromHostText(input: string): string | null {
+  const match = input.match(
+    /(?:https?:\/\/)?(?:www\.)?(?:arxiv\.org|ar5iv\.org|export\.arxiv\.org)\/(?:abs|pdf|html|format|e-print|src)\/([^\s?#)\]>"']+)/i
+  );
+  if (!match?.[1]) return null;
+  const normalized = normalizeArxivId(match[1]);
+  return isValidArxivId(normalized) ? normalized : null;
+}
+
+function looksLikeUrlInput(input: string): boolean {
+  return (
+    /^[a-z][a-z\d+\-.]*:\/\//i.test(input) ||
+    /^www\./i.test(input) ||
+    /\b[a-z0-9-]+\.[a-z]{2,}(?::\d+)?(?:\/|$)/i.test(input)
+  );
+}
+
 /**
  * Extract arXiv paper ID from various input formats:
  * - Full URL: https://arxiv.org/abs/2401.12345
@@ -295,19 +384,25 @@ export function extractArxivId(input: string): string | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
+  const direct = normalizeArxivId(trimmed);
+  if (isValidArxivId(direct)) return direct;
+
+  const fromUrl = parseArxivIdFromUrl(trimmed);
+  if (fromUrl) return fromUrl;
+
   const strippedPrefix = trimmed.replace(/^arxiv:\s*/i, '');
+  const fromPrefixedUrl = parseArxivIdFromUrl(strippedPrefix);
+  if (fromPrefixedUrl) return fromPrefixedUrl;
 
-  const urlMatch = strippedPrefix.match(
-    /(?:arxiv\.org\/(?:abs|pdf|html)|ar5iv\.org\/html)\/([^/?#\s]+)/i
-  );
-  const candidate = urlMatch ? urlMatch[1] : strippedPrefix;
-  const normalized = normalizeArxivId(candidate);
+  const fromHostText = parseArxivIdFromHostText(strippedPrefix);
+  if (fromHostText) return fromHostText;
 
-  if (!isValidArxivId(normalized)) {
+  // URL-like non-arXiv inputs should be rejected instead of falling through to freeform ID extraction.
+  if (looksLikeUrlInput(strippedPrefix)) {
     return null;
   }
 
-  return normalized;
+  return parseArxivIdFromFreeform(strippedPrefix);
 }
 
 /**
@@ -318,29 +413,38 @@ export async function fetchArxivMetadata(arxivId: string): Promise<PaperMetadata
   if (!isValidArxivId(normalizedId)) {
     throw new Error('Invalid arXiv ID format');
   }
+  const idCandidates = Array.from(
+    new Set([normalizedId, stripVersionSuffix(normalizedId)].filter(Boolean))
+  );
 
   let apiMetadata: Partial<PaperMetadata> = {};
-  try {
-    const apiUrl = `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(normalizedId)}`;
-    const response = await fetchWithTimeout(apiUrl);
-    if (response.ok) {
-      const xmlText = await response.text();
-      apiMetadata = parseApiMetadata(xmlText);
+  for (const idCandidate of idCandidates) {
+    try {
+      const apiUrl = `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idCandidate)}`;
+      const response = await fetchWithTimeout(apiUrl);
+      if (response.ok) {
+        const xmlText = await response.text();
+        apiMetadata = parseApiMetadata(xmlText);
+      }
+      if (metadataLooksComplete(apiMetadata)) break;
+    } catch {
+      // Continue with fallback.
     }
-  } catch {
-    // Continue with fallback.
   }
 
   let absMetadata: Partial<PaperMetadata> = {};
   if (!metadataLooksComplete(apiMetadata)) {
-    try {
-      const absResponse = await fetchWithTimeout(`https://arxiv.org/abs/${normalizedId}`);
-      if (absResponse.ok) {
-        const absHtml = await absResponse.text();
-        absMetadata = parseAbsPageMetadata(absHtml);
+    for (const idCandidate of idCandidates) {
+      try {
+        const absResponse = await fetchWithTimeout(`https://arxiv.org/abs/${idCandidate}`);
+        if (absResponse.ok) {
+          const absHtml = await absResponse.text();
+          absMetadata = parseAbsPageMetadata(absHtml);
+        }
+        if (metadataLooksComplete(absMetadata)) break;
+      } catch {
+        // Continue with best available metadata.
       }
-    } catch {
-      // Continue with best available metadata.
     }
   }
 
@@ -352,20 +456,31 @@ export async function fetchArxivMetadata(arxivId: string): Promise<PaperMetadata
  */
 export async function fetchArxivPdfText(arxivId: string): Promise<string> {
   const normalizedId = normalizeArxivId(arxivId);
-  const pdfUrl = `https://arxiv.org/pdf/${normalizedId}.pdf`;
-  const response = await fetchWithTimeout(pdfUrl);
+  const idCandidates = Array.from(
+    new Set([normalizedId, stripVersionSuffix(normalizedId)].filter(Boolean))
+  );
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
+  let lastError = '';
+  for (const idCandidate of idCandidates) {
+    const pdfUrl = `https://arxiv.org/pdf/${idCandidate}.pdf`;
+    const response = await fetchWithTimeout(pdfUrl);
+
+    if (!response.ok) {
+      lastError = `Failed to fetch PDF: ${response.status} ${response.statusText}`;
+      continue;
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!/application\/pdf/i.test(contentType)) {
+      lastError = `Unexpected content type while fetching PDF: ${contentType || 'unknown'}`;
+      continue;
+    }
+
+    const buffer = await response.arrayBuffer();
+    return extractPdfTextFromBuffer(buffer);
   }
 
-  const contentType = response.headers.get('content-type') ?? '';
-  if (!/application\/pdf/i.test(contentType)) {
-    throw new Error(`Unexpected content type while fetching PDF: ${contentType || 'unknown'}`);
-  }
-
-  const buffer = await response.arrayBuffer();
-  return extractPdfTextFromBuffer(buffer);
+  throw new Error(lastError || 'Failed to fetch PDF');
 }
 
 export async function fetchArxivPaperText(

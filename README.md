@@ -60,6 +60,9 @@ NEXTAUTH_SECRET=replace_with_a_strong_random_secret
 # Optional for Google login
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+# AUTH_GOOGLE_ID=
+# AUTH_GOOGLE_SECRET=
+# AUTH_SECRET=
 ```
 
 4. Run the app:
@@ -119,7 +122,7 @@ src/
 
 - Recommended Node.js: `>=20.11.0`
 - Set `GEMINI_API_KEY`, `DATABASE_PATH`, `NEXTAUTH_URL`, and `NEXTAUTH_SECRET` in your deployment environment
-- Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` if Google OAuth is enabled
+- Add `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (or `AUTH_GOOGLE_ID` + `AUTH_GOOGLE_SECRET`) if Google OAuth is enabled
 - Run `npm run build` in CI before release
 
 ---
