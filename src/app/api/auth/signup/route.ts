@@ -21,7 +21,19 @@ export async function POST(request: Request) {
       );
     }
 
-    const parsed = signupSchema.safeParse(body);
+    const payload =
+      body && typeof body === 'object'
+        ? {
+            ...(body as Record<string, unknown>),
+            name:
+              typeof (body as { name?: unknown }).name === 'string' &&
+              (body as { name: string }).name.trim().length === 0
+                ? undefined
+                : (body as { name?: unknown }).name,
+          }
+        : body;
+
+    const parsed = signupSchema.safeParse(payload);
 
     if (!parsed.success) {
       return NextResponse.json(
