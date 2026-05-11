@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Sparkles, Loader2, Link2 } from 'lucide-react';
 import { extractArxivId } from '@/lib/arxiv';
@@ -19,6 +19,16 @@ const examples = [
 export default function HeroInput({ onAnalyze, isLoading }: HeroInputProps) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paper = params.get('paper');
+    if (!paper) return;
+    const arxivId = extractArxivId(paper);
+    if (arxivId) {
+      window.setTimeout(() => setInput(arxivId), 0);
+    }
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

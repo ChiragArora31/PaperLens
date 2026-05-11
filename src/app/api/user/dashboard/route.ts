@@ -40,6 +40,15 @@ export async function GET() {
         recents,
         bookmarks,
         recommendations,
+        stats: {
+          decodedThisWeek: recents.filter((paper) => {
+            if (!paper.viewedAt) return false;
+            const viewed = new Date(paper.viewedAt).getTime();
+            return Number.isFinite(viewed) && Date.now() - viewed <= 7 * 24 * 60 * 60 * 1000;
+          }).length,
+          savedPapers: bookmarks.length,
+          continuePaper: recents[0] ?? null,
+        },
       },
     });
   } catch (error) {

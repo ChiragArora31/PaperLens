@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
+import { trackRequestEvent } from '@/lib/analytics';
 import type { PaperAnalysis } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -221,6 +222,12 @@ export async function POST(request: NextRequest) {
 
     const bytes = await pdfDoc.save();
     const filename = `${fileSafeName(title) || 'paperlens-summary'}.pdf`;
+
+    void trackRequestEvent(request, {
+      eventName: 'summary_exported',
+      arxivId,
+      title,
+    });
 
     return new NextResponse(Buffer.from(bytes), {
       status: 200,

@@ -9,8 +9,11 @@ import {
   BookOpenCheck,
   Brain,
   Compass,
+  Copy,
   Layers,
   Lightbulb,
+  Quote,
+  ShieldCheck,
   Sparkles,
 } from 'lucide-react';
 import HeroInput from '@/components/HeroInput';
@@ -47,6 +50,24 @@ const pillars = [
     icon: BookOpenCheck,
     title: 'Study-Ready Output',
     desc: 'Exportable summary PDF, structured learning path, and guided flow.',
+  },
+];
+
+const examples = [
+  {
+    id: '1706.03762',
+    title: 'Attention Is All You Need',
+    focus: 'Transformers, attention, sequence modeling',
+  },
+  {
+    id: '1810.04805',
+    title: 'BERT',
+    focus: 'Language pretraining, bidirectional representations',
+  },
+  {
+    id: '2006.11239',
+    title: 'Denoising Diffusion Probabilistic Models',
+    focus: 'Diffusion models, generative modeling',
   },
 ];
 
@@ -316,6 +337,80 @@ export default function Home() {
               <h3 className="landing-feature-title mb-2">{pillar.title}</h3>
               <p className="landing-feature-copy">{pillar.desc}</p>
             </motion.article>
+          ))}
+        </section>
+
+        <section className="mt-6 grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
+          <motion.article
+            initial={{ opacity: 0, y: 14 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.35 }}
+            className="landing-pro-card"
+          >
+            <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[hsl(var(--accent-teal)/0.14)]">
+              <ShieldCheck className="h-5 w-5" style={{ color: 'hsl(var(--accent-teal))' }} />
+            </div>
+            <h2 className="landing-feature-title mb-3">Built for reading, not replacing reading.</h2>
+            <p className="landing-feature-copy">
+              PaperLens keeps the arXiv source visible, shows extraction reliability, grounds chat answers
+              in citations, and gives you a path back into the paper instead of hiding everything behind one summary.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {['arXiv-only', 'citation-aware chat', 'reliability signals', 'PDF export'].map((item) => (
+                <span key={item} className="landing-pill">{item}</span>
+              ))}
+            </div>
+          </motion.article>
+
+          <motion.article
+            initial={{ opacity: 0, y: 14 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.35, delay: 0.05 }}
+            className="landing-pro-card"
+          >
+            <div className="mb-4 flex items-center gap-3">
+              <Quote className="h-5 w-5" style={{ color: 'hsl(var(--accent-blue))' }} />
+              <h2 className="landing-feature-title">Try a canonical paper</h2>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              {examples.map((example) => (
+                <button
+                  key={example.id}
+                  onClick={() => handleAnalyze({ arxivId: example.id })}
+                  disabled={isLoading}
+                  className="rounded-2xl border p-4 text-left transition-all hover:-translate-y-0.5"
+                  style={{ borderColor: 'hsl(var(--border-subtle))', background: 'hsl(var(--bg-secondary) / 0.58)' }}
+                >
+                  <span className="eyebrow-label" style={{ color: 'hsl(var(--accent-cyan))' }}>
+                    arXiv:{example.id}
+                  </span>
+                  <span className="mt-2 block text-base font-black leading-tight" style={{ color: 'hsl(var(--text-primary))' }}>
+                    {example.title}
+                  </span>
+                  <span className="mt-2 block text-sm font-semibold leading-6" style={{ color: 'hsl(var(--text-muted))' }}>
+                    {example.focus}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </motion.article>
+        </section>
+
+        <section className="mt-6 grid gap-4 md:grid-cols-3">
+          {[
+            { icon: Copy, title: 'Shareable breakdowns', copy: 'Copy a clean public page when a paper explanation is worth sending to a friend or study group.' },
+            { icon: BookOpenCheck, title: 'Return-ready workspace', copy: 'Recent papers, bookmarks, and focused recommendations help your reading session continue later.' },
+            { icon: ShieldCheck, title: 'Trust by default', copy: 'Invalid arXiv inputs, extraction fallbacks, model issues, and diagram failures are handled visibly and calmly.' },
+          ].map((item) => (
+            <article key={item.title} className="landing-pro-card">
+              <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[hsl(var(--accent-blue)/0.14)]">
+                <item.icon className="h-5 w-5" style={{ color: 'hsl(var(--accent-blue))' }} />
+              </div>
+              <h3 className="landing-feature-title mb-2">{item.title}</h3>
+              <p className="landing-feature-copy">{item.copy}</p>
+            </article>
           ))}
         </section>
 

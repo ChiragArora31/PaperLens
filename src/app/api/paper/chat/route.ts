@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractArxivId, fetchArxivMetadata } from '@/lib/arxiv';
 import { answerQuestionWithCitations } from '@/lib/paperRag';
+import { trackRequestEvent } from '@/lib/analytics';
 import type { ChatMessage } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -58,6 +59,13 @@ export async function POST(request: NextRequest) {
       question,
       history: normalizeHistory(body.history),
       apiKey,
+    });
+
+    void trackRequestEvent(request, {
+      eventName: 'chat_message_sent',
+      arxivId,
+      title: metadata.title,
+      metadata: { questionLength: question.length, historyLength: normalizeHistory(body.history).length },
     });
 
     return NextResponse.json({ success: true, data: result });

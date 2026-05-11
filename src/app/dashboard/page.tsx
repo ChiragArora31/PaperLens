@@ -13,6 +13,7 @@ import {
   Sparkles,
   Library,
   PanelLeftClose,
+  CalendarDays,
 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 
@@ -40,6 +41,11 @@ interface DashboardPayload {
   recents: UserPaper[];
   bookmarks: UserPaper[];
   recommendations: Recommendation[];
+  stats?: {
+    decodedThisWeek: number;
+    savedPapers: number;
+    continuePaper: UserPaper | null;
+  };
 }
 
 type DashboardTabId = 'recents' | 'bookmarks' | 'recommendations';
@@ -277,10 +283,10 @@ export default function PersonalizedDashboardPage() {
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
-              <a href={`https://arxiv.org/abs/${paper.arxivId}`} target="_blank" rel="noopener noreferrer" className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
+              <Link href={`/?paper=${encodeURIComponent(paper.arxivId)}`} className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
                 <ExternalLink className="h-4 w-4" />
-                Open paper
-              </a>
+                Decode again
+              </Link>
               <button onClick={() => void toggleBookmark(paper)} className="stat-pill">
                 <Bookmark className="h-3.5 w-3.5" />
                 {bookmarkIds.has(paper.arxivId) ? 'Bookmarked' : 'Bookmark'}
@@ -326,10 +332,10 @@ export default function PersonalizedDashboardPage() {
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
-              <a href={`https://arxiv.org/abs/${paper.arxivId}`} target="_blank" rel="noopener noreferrer" className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
+              <Link href={`/?paper=${encodeURIComponent(paper.arxivId)}`} className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
                 <ExternalLink className="h-4 w-4" />
-                Open paper
-              </a>
+                Decode again
+              </Link>
               <button onClick={() => void toggleBookmark(paper)} className="stat-pill">
                 <Bookmark className="h-3.5 w-3.5" />
                 Remove bookmark
@@ -380,10 +386,10 @@ export default function PersonalizedDashboardPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <a href={paper.url} target="_blank" rel="noopener noreferrer" className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
+              <Link href={`/?paper=${encodeURIComponent(paper.arxivId)}`} className="landing-cta-primary" style={{ textDecoration: 'none', padding: '0.55rem 0.95rem', minHeight: 'unset' }}>
                 <ExternalLink className="h-4 w-4" />
-                Open paper
-              </a>
+                Decode this
+              </Link>
               <button onClick={() => void toggleBookmark(paper)} className="stat-pill">
                 <Bookmark className="h-3.5 w-3.5" />
                 {bookmarkIds.has(paper.arxivId) ? 'Bookmarked' : 'Bookmark'}
@@ -451,6 +457,40 @@ export default function PersonalizedDashboardPage() {
             {error}
           </div>
         )}
+
+        <section className="mb-5 grid gap-4 md:grid-cols-3">
+          <article className="card workbench-static p-5">
+            <p className="eyebrow-label" style={{ color: 'hsl(var(--accent-teal))' }}>This week</p>
+            <div className="mt-3 flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[2rem] font-black leading-none">{payload?.stats?.decodedThisWeek ?? 0}</p>
+                <p className="mt-1 text-sm font-semibold" style={{ color: 'hsl(var(--text-muted))' }}>papers decoded</p>
+              </div>
+              <CalendarDays className="h-6 w-6" style={{ color: 'hsl(var(--accent-teal))' }} />
+            </div>
+          </article>
+          <article className="card workbench-static p-5">
+            <p className="eyebrow-label" style={{ color: 'hsl(var(--accent-indigo))' }}>Library</p>
+            <div className="mt-3 flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[2rem] font-black leading-none">{payload?.stats?.savedPapers ?? 0}</p>
+                <p className="mt-1 text-sm font-semibold" style={{ color: 'hsl(var(--text-muted))' }}>saved papers</p>
+              </div>
+              <Library className="h-6 w-6" style={{ color: 'hsl(var(--accent-indigo))' }} />
+            </div>
+          </article>
+          <article className="card workbench-static p-5">
+            <p className="eyebrow-label" style={{ color: 'hsl(var(--accent-blue))' }}>Continue learning</p>
+            {payload?.stats?.continuePaper ? (
+              <Link href={`/?paper=${encodeURIComponent(payload.stats.continuePaper.arxivId)}`} className="mt-3 block text-inherit no-underline">
+                <p className="line-clamp-2 text-base font-black leading-tight">{payload.stats.continuePaper.title}</p>
+                <p className="mt-1 text-sm font-semibold" style={{ color: 'hsl(var(--text-muted))' }}>Continue in PaperLens</p>
+              </Link>
+            ) : (
+              <p className="mt-3 text-sm font-semibold" style={{ color: 'hsl(var(--text-muted))' }}>Analyze one paper to start your trail.</p>
+            )}
+          </article>
+        </section>
 
         <div className="workbench-grid gap-4 lg:gap-6">
           <aside className="workbench-sidebar card workbench-static hidden lg:block">

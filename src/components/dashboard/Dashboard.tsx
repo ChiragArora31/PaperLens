@@ -18,7 +18,6 @@ import {
   BookmarkPlus,
   BookmarkCheck,
   MessageSquareText,
-  Mic,
   Orbit,
   Target,
   ShieldCheck,
@@ -39,10 +38,10 @@ import LearningPathSection from './LearningPathSection';
 import InfographicDiagrams from './InfographicDiagrams';
 import SimilarPapersSection from './SimilarPapersSection';
 import ChatWithPaperSection from './ChatWithPaperSection';
-import PodcastStudioSection from './PodcastStudioSection';
 import ExportSummaryButton from './ExportSummaryButton';
 import ReliabilitySection from './ReliabilitySection';
 import ImplementationPlaybookSection from './ImplementationPlaybookSection';
+import SharePaperButton from './SharePaperButton';
 
 interface DashboardProps {
   analysis: PaperAnalysis;
@@ -61,8 +60,7 @@ type SectionId =
   | 'breakdown'
   | 'impact'
   | 'similar'
-  | 'chat'
-  | 'podcast';
+  | 'chat';
 
 const sectionGroups: Array<{
   group: string;
@@ -93,7 +91,6 @@ const sectionGroups: Array<{
       { id: 'impact', label: 'Why It Matters', icon: Target },
       { id: 'similar', label: 'Similar Papers', icon: Orbit },
       { id: 'chat', label: 'Chat with Paper', icon: MessageSquareText },
-      { id: 'podcast', label: 'Podcast Studio', icon: Mic },
     ],
   },
 ];
@@ -111,7 +108,6 @@ const sectionDescriptions: Record<SectionId, string> = {
   impact: 'See use cases, industry relevance, and strategic significance.',
   similar: 'Discover top adjacent papers to continue your learning thread.',
   chat: 'Ask questions and get cited answers grounded in the paper.',
-  podcast: 'Generate and play an audio-style walkthrough script.',
 };
 
 export default function Dashboard({ analysis, onBack }: DashboardProps) {
@@ -270,8 +266,6 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
         return <SimilarPapersSection papers={analysis.similarPapers ?? []} />;
       case 'chat':
         return <ChatWithPaperSection arxivId={analysis.metadata.id} />;
-      case 'podcast':
-        return <PodcastStudioSection analysis={analysis} />;
       default:
         return <TldrSection data={analysis.tldr} evidence={analysis.evidence} />;
     }
@@ -363,6 +357,7 @@ export default function Dashboard({ analysis, onBack }: DashboardProps) {
                     </a>
                   )}
                   <ExportSummaryButton analysis={analysis} />
+                  <SharePaperButton analysis={analysis} />
                   {sessionStatus === 'authenticated' && meta.id && (
                     <button onClick={toggleBookmark} disabled={bookmarkLoading} className="stat-pill">
                       {isBookmarked ? <BookmarkCheck className="h-3.5 w-3.5" /> : <BookmarkPlus className="h-3.5 w-3.5" />}

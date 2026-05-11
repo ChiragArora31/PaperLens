@@ -3,11 +3,19 @@ import { extractArxivId, fetchArxivMetadata, fetchArxivPaperText } from '@/lib/a
 import { analyzePaper, buildFallbackAnalysis } from '@/lib/gemini';
 import { fetchSimilarPapersForMetadata } from '@/lib/recommendations';
 import { buildEvidenceForAnalysis, computeReliability } from '@/lib/analysisEnhancer';
+import { trackRequestEvent } from '@/lib/analytics';
+import { getPublicPaper, recordPublicPaperAnalysis, savePublicPaper } from '@/lib/db';
 import type { PaperAnalysis, SimilarPaper } from '@/lib/types';
 
 export const maxDuration = 120;
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function isPaperAnalysis(value: unknown): value is PaperAnalysis {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PaperAnalysis>;
+  return Boolean(candidate.metadata?.id && candidate.metadata.title && candidate.tldr?.summary);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,6 +47,26 @@ export async function POST(request: NextRequest) {
         { success: false, error: 'Invalid arXiv link or ID format.' },
         { status: 400 }
       );
+    }
+
+    const cachedPaper = getPublicPaper(normalizedArxivId);
+    if (cachedPaper && isPaperAnalysis(cachedPaper.analysis)) {
+      recordPublicPaperAnalysis(normalizedArxivId);
+      void trackRequestEvent(request, {
+        eventName: 'paper_analyzed',
+        arxivId: normalizedArxivId,
+        title: cachedPaper.title,
+        metadata: {
+          cache: 'public_papers',
+          cachedAnalyzedCount: cachedPaper.analyzedCount,
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: cachedPaper.analysis,
+        cached: true,
+      });
     }
 
     const metadata = await fetchArxivMetadata(normalizedArxivId);
@@ -110,14 +138,41 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const responseData = {
+      ...analysis,
+      similarPapers,
+      evidence,
+      reliability,
+    };
+
+    try {
+      savePublicPaper({
+        arxivId: normalizedArxivId,
+        title: metadata.title,
+        abstract: metadata.abstract,
+        authors: metadata.authors,
+        categories: metadata.categories,
+        analysis: responseData,
+      });
+    } catch (shareError) {
+      console.warn('Public paper save failed:', shareError);
+    }
+
+    void trackRequestEvent(request, {
+      eventName: 'paper_analyzed',
+      arxivId: normalizedArxivId,
+      title: metadata.title,
+      metadata: {
+        source: paperContent.source,
+        modelMode,
+        reliabilityScore: reliability.score,
+        category: metadata.categories[0] ?? null,
+      },
+    });
+
     return NextResponse.json({
       success: true,
-      data: {
-        ...analysis,
-        similarPapers,
-        evidence,
-        reliability,
-      },
+      data: responseData,
     });
   } catch (error) {
     console.error('Analysis error:', error);

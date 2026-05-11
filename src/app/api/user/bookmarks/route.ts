@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
@@ -9,6 +9,7 @@ import {
   removeBookmark,
   upsertBookmark,
 } from '@/lib/db';
+import { trackRequestEvent } from '@/lib/analytics';
 
 const bookmarkSchema = z.object({
   arxivId: z.string().min(1).max(64),
@@ -18,7 +19,7 @@ const bookmarkSchema = z.object({
   categories: z.array(z.string().max(64)).optional(),
 });
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     const user = ensureSessionUser({
@@ -53,7 +54,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     const user = ensureSessionUser({
@@ -78,6 +79,11 @@ export async function POST(request: Request) {
     }
 
     upsertBookmark(userId, parsed.data);
+    void trackRequestEvent(request, {
+      eventName: 'bookmark_created',
+      arxivId: parsed.data.arxivId,
+      title: parsed.data.title,
+    });
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -89,7 +95,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     const user = ensureSessionUser({
@@ -115,6 +121,10 @@ export async function DELETE(request: Request) {
     }
 
     removeBookmark(userId, arxivId);
+    void trackRequestEvent(request, {
+      eventName: 'bookmark_removed',
+      arxivId,
+    });
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Bookmark delete error:', error);

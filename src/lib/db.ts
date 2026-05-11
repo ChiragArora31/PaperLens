@@ -100,11 +100,47 @@ db.exec(`
     UNIQUE(user_id, arxiv_id)
   );
 
+  CREATE TABLE IF NOT EXISTS analytics_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_name TEXT NOT NULL,
+    user_id TEXT,
+    anonymous_id TEXT,
+    arxiv_id TEXT,
+    title TEXT,
+    path TEXT,
+    referrer TEXT,
+    source TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    date_key TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS public_papers (
+    arxiv_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    abstract TEXT NOT NULL,
+    authors_json TEXT NOT NULL,
+    categories_json TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    share_slug TEXT NOT NULL UNIQUE,
+    analyzed_count INTEGER NOT NULL DEFAULT 1,
+    first_analyzed_at TEXT NOT NULL,
+    last_analyzed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    is_public INTEGER NOT NULL DEFAULT 1
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
   CREATE INDEX IF NOT EXISTS idx_recent_user_viewed_at ON recent_papers (user_id, viewed_at DESC);
   CREATE INDEX IF NOT EXISTS idx_recent_user_arxiv ON recent_papers (user_id, arxiv_id);
   CREATE INDEX IF NOT EXISTS idx_bookmarks_user_updated_at ON bookmarks (user_id, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_bookmarks_user_arxiv ON bookmarks (user_id, arxiv_id);
+  CREATE INDEX IF NOT EXISTS idx_analytics_event_date ON analytics_events (event_name, date_key);
+  CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events (created_at);
+  CREATE INDEX IF NOT EXISTS idx_analytics_arxiv ON analytics_events (arxiv_id);
+  CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events (user_id, date_key);
+  CREATE INDEX IF NOT EXISTS idx_public_papers_analyzed ON public_papers (analyzed_count DESC, last_analyzed_at DESC);
 `);
 
 // Keep orphan rows cleaned up for DBs that predate FK constraints.
@@ -133,6 +169,15 @@ interface PaperRow {
   updated_at?: string;
 }
 
+interface PublicPaperRow extends PaperRow {
+  analysis_json: string;
+  share_slug: string;
+  analyzed_count: number;
+  first_analyzed_at: string;
+  last_analyzed_at: string;
+  is_public: number;
+}
+
 export interface AppUser {
   id: string;
   email: string;
@@ -151,6 +196,71 @@ export interface StoredPaper {
   viewedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface AnalyticsEventInput {
+  eventName: string;
+  userId?: string | null;
+  anonymousId?: string | null;
+  arxivId?: string | null;
+  title?: string | null;
+  path?: string | null;
+  referrer?: string | null;
+  source?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AnalyticsSummary {
+  totals: {
+    dailyActiveUsers: number;
+    monthlyActiveUsers: number;
+    registeredUsers: number;
+    anonymousVisitors30d: number;
+    paperAnalysesToday: number;
+    paperAnalyses30d: number;
+    bookmarks30d: number;
+    exports30d: number;
+    chatMessages30d: number;
+    repeatUsers30d: number;
+    guestAnalyses30d: number;
+    loggedInAnalyses30d: number;
+  };
+  dailySeries: Array<{
+    date: string;
+    activeUsers: number;
+    analyses: number;
+    bookmarks: number;
+    exports: number;
+    chats: number;
+  }>;
+  monthlySeries: Array<{ month: string; activeUsers: number; analyses: number }>;
+  popularPapers: Array<{ arxivId: string; title: string; count: number; lastAnalyzedAt: string }>;
+  trafficSources: Array<{ source: string; count: number }>;
+  recentEvents: Array<{
+    eventName: string;
+    arxivId: string | null;
+    title: string | null;
+    createdAt: string;
+    identity: 'user' | 'guest';
+  }>;
+  retention: {
+    activeLast7d: number;
+    returnedFromPrevious7d: number;
+    returningRate: number;
+  };
+}
+
+export interface PublicPaper {
+  arxivId: string;
+  title: string;
+  abstract: string;
+  authors: string[];
+  categories: string[];
+  analysis: unknown;
+  shareSlug: string;
+  analyzedCount: number;
+  firstAnalyzedAt: string;
+  lastAnalyzedAt: string;
 }
 
 const MAX_RECENTS_PER_USER = 120;
@@ -252,6 +362,69 @@ const listRecentPapersStmt = db.prepare(
    LIMIT ?`
 );
 
+const insertAnalyticsEventStmt = db.prepare(
+  `INSERT INTO analytics_events
+   (event_name, user_id, anonymous_id, arxiv_id, title, path, referrer, source, metadata_json, created_at, date_key)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+
+const upsertPublicPaperStmt = db.prepare(
+  `INSERT INTO public_papers
+   (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
+   ON CONFLICT(arxiv_id)
+   DO UPDATE SET
+     title = excluded.title,
+     abstract = excluded.abstract,
+     authors_json = excluded.authors_json,
+     categories_json = excluded.categories_json,
+     analysis_json = excluded.analysis_json,
+     analyzed_count = public_papers.analyzed_count + 1,
+     last_analyzed_at = excluded.last_analyzed_at,
+     updated_at = excluded.updated_at,
+     is_public = 1`
+);
+
+const upsertPublicPaperSnapshotStmt = db.prepare(
+  `INSERT INTO public_papers
+   (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
+   ON CONFLICT(arxiv_id)
+   DO UPDATE SET
+     title = excluded.title,
+     abstract = excluded.abstract,
+     authors_json = excluded.authors_json,
+     categories_json = excluded.categories_json,
+     analysis_json = excluded.analysis_json,
+     updated_at = excluded.updated_at,
+     is_public = 1`
+);
+
+const incrementPublicPaperAnalysisStmt = db.prepare(
+  `UPDATE public_papers
+   SET analyzed_count = analyzed_count + 1,
+       last_analyzed_at = ?,
+       updated_at = ?
+   WHERE arxiv_id = ? AND is_public = 1`
+);
+
+const getPublicPaperStmt = db.prepare(
+  `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+          analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+   FROM public_papers
+   WHERE arxiv_id = ? AND is_public = 1
+   LIMIT 1`
+);
+
+const listPublicPapersStmt = db.prepare(
+  `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+          analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+   FROM public_papers
+   WHERE is_public = 1
+   ORDER BY analyzed_count DESC, last_analyzed_at DESC
+   LIMIT ?`
+);
+
 const upsertRecentTxn = db.transaction((userId: string, paperInput: UserPaperInput) => {
   const paper = normalizeArxivInput(paperInput);
   const now = nowIso();
@@ -310,6 +483,56 @@ function mapPaper(row: PaperRow): StoredPaper {
     viewedAt: row.viewed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function dateKey(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function daysAgo(days: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString();
+}
+
+function cleanOptional(value: string | null | undefined, max = 500): string | null {
+  if (!value) return null;
+  const cleaned = cleanString(value);
+  return cleaned ? cleaned.slice(0, max) : null;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return '{}';
+  }
+}
+
+function shareSlug(arxivId: string): string {
+  return cleanString(arxivId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function mapPublicPaper(row: PublicPaperRow | undefined): PublicPaper | null {
+  if (!row) return null;
+  let analysis: unknown = null;
+  try {
+    analysis = JSON.parse(row.analysis_json);
+  } catch {
+    analysis = null;
+  }
+  return {
+    arxivId: row.arxiv_id,
+    title: row.title,
+    abstract: row.abstract,
+    authors: decodeList(row.authors_json),
+    categories: decodeList(row.categories_json),
+    analysis,
+    shareSlug: row.share_slug,
+    analyzedCount: row.analyzed_count,
+    firstAnalyzedAt: row.first_analyzed_at,
+    lastAnalyzedAt: row.last_analyzed_at,
   };
 }
 
@@ -485,4 +708,268 @@ export function listRecentPapers(userId: string, limit = 20): StoredPaper[] {
   const safeLimit = clampLimit(limit, 1, 200, 20);
   const rows = listRecentPapersStmt.all(userId, safeLimit) as PaperRow[];
   return rows.map(mapPaper);
+}
+
+export function trackAnalyticsEvent(input: AnalyticsEventInput) {
+  const now = nowIso();
+  insertAnalyticsEventStmt.run(
+    cleanString(input.eventName).slice(0, 80),
+    cleanOptional(input.userId, 120),
+    cleanOptional(input.anonymousId, 120),
+    cleanOptional(input.arxivId, 80),
+    cleanOptional(input.title, 500),
+    cleanOptional(input.path, 500),
+    cleanOptional(input.referrer, 500),
+    cleanOptional(input.source, 160),
+    safeJson(input.metadata),
+    now,
+    dateKey(new Date(now))
+  );
+}
+
+export function savePublicPaper(input: {
+  arxivId: string;
+  title: string;
+  abstract?: string;
+  authors?: string[];
+  categories?: string[];
+  analysis: unknown;
+}): PublicPaper {
+  const paper = normalizeArxivInput(input);
+  const now = nowIso();
+  upsertPublicPaperStmt.run(
+    paper.arxivId,
+    paper.title,
+    paper.abstract ?? '',
+    encodeList(paper.authors),
+    encodeList(paper.categories),
+    safeJson(input.analysis),
+    shareSlug(paper.arxivId),
+    now,
+    now,
+    now
+  );
+
+  const saved = getPublicPaper(paper.arxivId);
+  if (!saved) {
+    throw new Error('Unable to save public paper.');
+  }
+  return saved;
+}
+
+export function savePublicPaperSnapshot(input: {
+  arxivId: string;
+  title: string;
+  abstract?: string;
+  authors?: string[];
+  categories?: string[];
+  analysis: unknown;
+}): PublicPaper {
+  const paper = normalizeArxivInput(input);
+  const now = nowIso();
+  upsertPublicPaperSnapshotStmt.run(
+    paper.arxivId,
+    paper.title,
+    paper.abstract ?? '',
+    encodeList(paper.authors),
+    encodeList(paper.categories),
+    safeJson(input.analysis),
+    shareSlug(paper.arxivId),
+    now,
+    now,
+    now
+  );
+
+  const saved = getPublicPaper(paper.arxivId);
+  if (!saved) {
+    throw new Error('Unable to save public paper.');
+  }
+  return saved;
+}
+
+export function getPublicPaper(arxivId: string): PublicPaper | null {
+  const row = getPublicPaperStmt.get(cleanString(arxivId)) as PublicPaperRow | undefined;
+  return mapPublicPaper(row);
+}
+
+export function recordPublicPaperAnalysis(arxivId: string) {
+  const now = nowIso();
+  incrementPublicPaperAnalysisStmt.run(now, now, cleanString(arxivId));
+}
+
+export function listPublicPapers(limit = 8): PublicPaper[] {
+  const safeLimit = clampLimit(limit, 1, 24, 8);
+  const rows = listPublicPapersStmt.all(safeLimit) as PublicPaperRow[];
+  return rows.map(mapPublicPaper).filter((paper): paper is PublicPaper => Boolean(paper));
+}
+
+function scalarCount(sql: string, params: unknown[] = []): number {
+  const row = db.prepare(sql).get(...params) as { value?: number } | undefined;
+  return Number(row?.value ?? 0);
+}
+
+export function getAnalyticsSummary(): AnalyticsSummary {
+  const today = dateKey();
+  const since30 = daysAgo(30);
+  const since14 = daysAgo(14);
+  const since7 = daysAgo(7);
+
+  const registeredUsers = scalarCount('SELECT COUNT(*) AS value FROM users');
+  const dailyActiveUsers = scalarCount(
+    `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
+     FROM analytics_events
+     WHERE date_key = ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
+    [today]
+  );
+  const monthlyActiveUsers = scalarCount(
+    `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
+     FROM analytics_events
+     WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
+    [since30]
+  );
+  const anonymousVisitors30d = scalarCount(
+    `SELECT COUNT(DISTINCT anonymous_id) AS value
+     FROM analytics_events
+     WHERE created_at >= ? AND user_id IS NULL AND anonymous_id IS NOT NULL`,
+    [since30]
+  );
+
+  const eventCount = (eventName: string, since: string) =>
+    scalarCount(
+      'SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = ? AND created_at >= ?',
+      [eventName, since]
+    );
+
+  const repeatUsers30d = scalarCount(
+    `SELECT COUNT(*) AS value
+     FROM (
+       SELECT COALESCE(user_id, anonymous_id) AS identity, COUNT(DISTINCT date_key) AS active_days
+       FROM analytics_events
+       WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL
+       GROUP BY identity
+       HAVING active_days > 1
+     )`,
+    [since30]
+  );
+
+  const activeLast7d = scalarCount(
+    `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
+     FROM analytics_events
+     WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
+    [since7]
+  );
+  const returnedFromPrevious7d = scalarCount(
+    `SELECT COUNT(*) AS value
+     FROM (
+       SELECT COALESCE(recent.user_id, recent.anonymous_id) AS visitor_identity
+       FROM analytics_events recent
+       WHERE recent.created_at >= ? AND COALESCE(recent.user_id, recent.anonymous_id) IS NOT NULL
+       GROUP BY visitor_identity
+       HAVING EXISTS (
+         SELECT 1 FROM analytics_events previous
+         WHERE COALESCE(previous.user_id, previous.anonymous_id) = visitor_identity
+           AND previous.created_at >= ?
+           AND previous.created_at < ?
+       )
+     )`,
+    [since7, since14, since7]
+  );
+
+  const dailyRows = db.prepare(
+    `WITH days AS (
+       SELECT date_key FROM analytics_events WHERE created_at >= ? GROUP BY date_key
+     )
+     SELECT
+       days.date_key AS date,
+       COUNT(DISTINCT COALESCE(e.user_id, e.anonymous_id)) AS activeUsers,
+       SUM(CASE WHEN e.event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses,
+       SUM(CASE WHEN e.event_name = 'bookmark_created' THEN 1 ELSE 0 END) AS bookmarks,
+       SUM(CASE WHEN e.event_name = 'summary_exported' THEN 1 ELSE 0 END) AS exports,
+       SUM(CASE WHEN e.event_name = 'chat_message_sent' THEN 1 ELSE 0 END) AS chats
+     FROM days
+     LEFT JOIN analytics_events e ON e.date_key = days.date_key
+     GROUP BY days.date_key
+     ORDER BY days.date_key ASC`
+  ).all(since30) as Array<{
+    date: string;
+    activeUsers: number;
+    analyses: number;
+    bookmarks: number;
+    exports: number;
+    chats: number;
+  }>;
+
+  const monthlyRows = db.prepare(
+    `SELECT
+       substr(date_key, 1, 7) AS month,
+       COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS activeUsers,
+       SUM(CASE WHEN event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses
+     FROM analytics_events
+     WHERE created_at >= ?
+     GROUP BY month
+     ORDER BY month ASC`
+  ).all(daysAgo(180)) as Array<{ month: string; activeUsers: number; analyses: number }>;
+
+  const popularPapers = db.prepare(
+    `SELECT arxiv_id AS arxivId, title, analyzed_count AS count, last_analyzed_at AS lastAnalyzedAt
+     FROM public_papers
+     WHERE is_public = 1
+     ORDER BY analyzed_count DESC, last_analyzed_at DESC
+     LIMIT 10`
+  ).all() as AnalyticsSummary['popularPapers'];
+
+  const trafficSources = db.prepare(
+    `SELECT COALESCE(NULLIF(source, ''), 'Direct / unknown') AS source, COUNT(*) AS count
+     FROM analytics_events
+     WHERE created_at >= ? AND event_name = 'page_view'
+     GROUP BY source
+     ORDER BY count DESC
+     LIMIT 10`
+  ).all(since30) as AnalyticsSummary['trafficSources'];
+
+  const recentEvents = db.prepare(
+    `SELECT event_name AS eventName, arxiv_id AS arxivId, title, created_at AS createdAt,
+            CASE WHEN user_id IS NULL THEN 'guest' ELSE 'user' END AS identity
+     FROM analytics_events
+     ORDER BY created_at DESC
+     LIMIT 24`
+  ).all() as AnalyticsSummary['recentEvents'];
+
+  return {
+    totals: {
+      dailyActiveUsers,
+      monthlyActiveUsers,
+      registeredUsers,
+      anonymousVisitors30d,
+      paperAnalysesToday: scalarCount(
+        `SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = 'paper_analyzed' AND date_key = ?`,
+        [today]
+      ),
+      paperAnalyses30d: eventCount('paper_analyzed', since30),
+      bookmarks30d: eventCount('bookmark_created', since30),
+      exports30d: eventCount('summary_exported', since30),
+      chatMessages30d: eventCount('chat_message_sent', since30),
+      repeatUsers30d,
+      guestAnalyses30d: scalarCount(
+        `SELECT COUNT(*) AS value FROM analytics_events
+         WHERE event_name = 'paper_analyzed' AND created_at >= ? AND user_id IS NULL`,
+        [since30]
+      ),
+      loggedInAnalyses30d: scalarCount(
+        `SELECT COUNT(*) AS value FROM analytics_events
+         WHERE event_name = 'paper_analyzed' AND created_at >= ? AND user_id IS NOT NULL`,
+        [since30]
+      ),
+    },
+    dailySeries: dailyRows,
+    monthlySeries: monthlyRows,
+    popularPapers,
+    trafficSources,
+    recentEvents,
+    retention: {
+      activeLast7d,
+      returnedFromPrevious7d,
+      returningRate: activeLast7d > 0 ? Math.round((returnedFromPrevious7d / activeLast7d) * 100) : 0,
+    },
+  };
 }
