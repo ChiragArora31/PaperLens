@@ -4,18 +4,12 @@ import { analyzePaper, buildFallbackAnalysis } from '@/lib/gemini';
 import { fetchSimilarPapersForMetadata } from '@/lib/recommendations';
 import { buildEvidenceForAnalysis, computeReliability } from '@/lib/analysisEnhancer';
 import { trackRequestEvent } from '@/lib/analytics';
-import { getPublicPaper, recordPublicPaperAnalysis, savePublicPaper } from '@/lib/db';
+import { savePublicPaper } from '@/lib/db';
 import type { PaperAnalysis, SimilarPaper } from '@/lib/types';
 
 export const maxDuration = 120;
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-function isPaperAnalysis(value: unknown): value is PaperAnalysis {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<PaperAnalysis>;
-  return Boolean(candidate.metadata?.id && candidate.metadata.title && candidate.tldr?.summary);
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -47,26 +41,6 @@ export async function POST(request: NextRequest) {
         { success: false, error: 'Invalid arXiv link or ID format.' },
         { status: 400 }
       );
-    }
-
-    const cachedPaper = getPublicPaper(normalizedArxivId);
-    if (cachedPaper && isPaperAnalysis(cachedPaper.analysis)) {
-      recordPublicPaperAnalysis(normalizedArxivId);
-      void trackRequestEvent(request, {
-        eventName: 'paper_analyzed',
-        arxivId: normalizedArxivId,
-        title: cachedPaper.title,
-        metadata: {
-          cache: 'public_papers',
-          cachedAnalyzedCount: cachedPaper.analyzedCount,
-        },
-      });
-
-      return NextResponse.json({
-        success: true,
-        data: cachedPaper.analysis,
-        cached: true,
-      });
     }
 
     const metadata = await fetchArxivMetadata(normalizedArxivId);
