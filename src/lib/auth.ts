@@ -30,7 +30,7 @@ const providers: NextAuthOptions['providers'] = [
       if (!parsed.success) return null;
 
       const email = parsed.data.email.toLowerCase().trim();
-      const user = getUserByEmail(email);
+      const user = await getUserByEmail(email);
       if (!user?.passwordHash) return null;
 
       const validPassword = await compare(parsed.data.password, user.passwordHash);
@@ -69,7 +69,7 @@ export const authOptions: NextAuthOptions = {
       if (!user.email) return false;
 
       if (account?.provider === 'google') {
-        ensureOAuthUser({
+        await ensureOAuthUser({
           email: user.email,
           name: user.name,
           image: user.image,
@@ -83,7 +83,7 @@ export const authOptions: NextAuthOptions = {
       const email = user?.email ?? token.email;
       if (!email) return token;
 
-      const dbUser = getUserByEmail(email);
+      const dbUser = await getUserByEmail(email);
       if (dbUser) {
         token.sub = dbUser.id;
         token.email = dbUser.email;

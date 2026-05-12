@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
+import { Pool, type PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import {
   cleanString,
   decodeList,
@@ -10,37 +11,26 @@ import {
   type UserPaperInput,
 } from './userPaper';
 
-const dbPath = resolve(process.cwd(), process.env.DATABASE_PATH || 'data/paperlens.db');
-const dbDir = dirname(dbPath);
-if (!existsSync(dbDir)) {
-  mkdirSync(dbDir, { recursive: true });
-}
+const MAX_RECENTS_PER_USER = 120;
+const MAX_BOOKMARKS_PER_USER = 600;
+const hasPostgres = Boolean(process.env.DATABASE_URL);
 
-const db = new Database(dbPath);
-
-function safePragma(statement: string) {
-  try {
-    db.pragma(statement);
-  } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn(`SQLite pragma skipped: ${statement}`, error);
-    }
-  }
-}
-
-// Pragmas tuned for multi-user write/read concurrency on a single-node deployment.
-safePragma('journal_mode = WAL');
-safePragma('synchronous = NORMAL');
-safePragma('busy_timeout = 5000');
-safePragma('foreign_keys = ON');
-safePragma('temp_store = MEMORY');
-safePragma('cache_size = -16000');
-safePragma('wal_autocheckpoint = 1000');
-safePragma('journal_size_limit = 67108864');
-safePragma('mmap_size = 268435456');
+let sqliteDb: Database.Database | null = null;
+let postgresPool: Pool | null = null;
+let postgresReady: Promise<void> | null = null;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function dateKey(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function daysAgo(days: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString();
 }
 
 function clampLimit(limit: number, min: number, max: number, fallback: number): number {
@@ -48,9 +38,32 @@ function clampLimit(limit: number, min: number, max: number, fallback: number): 
   return Math.min(max, Math.max(min, Math.floor(limit)));
 }
 
-function isConstraintError(error: unknown): boolean {
+function cleanOptional(value: string | null | undefined, max = 500): string | null {
+  if (!value) return null;
+  const cleaned = cleanString(value);
+  return cleaned ? cleaned.slice(0, max) : null;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return '{}';
+  }
+}
+
+function shareSlug(arxivId: string): string {
+  return cleanString(arxivId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function numberValue(value: unknown): number {
+  return Number(value ?? 0);
+}
+
+function isDuplicateError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /SQLITE_CONSTRAINT/i.test(error.message);
+  const coded = error as Error & { code?: string };
+  return coded.code === '23505' || /SQLITE_CONSTRAINT/i.test(error.message);
 }
 
 export class DuplicateEmailError extends Error {
@@ -59,95 +72,6 @@ export class DuplicateEmailError extends Error {
     this.name = 'DuplicateEmailError';
   }
 }
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    name TEXT,
-    password_hash TEXT,
-    auth_provider TEXT NOT NULL DEFAULT 'credentials',
-    image TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS recent_papers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    arxiv_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    abstract TEXT NOT NULL,
-    authors_json TEXT NOT NULL,
-    categories_json TEXT NOT NULL,
-    viewed_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE(user_id, arxiv_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS bookmarks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    arxiv_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    abstract TEXT NOT NULL,
-    authors_json TEXT NOT NULL,
-    categories_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE(user_id, arxiv_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS analytics_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_name TEXT NOT NULL,
-    user_id TEXT,
-    anonymous_id TEXT,
-    arxiv_id TEXT,
-    title TEXT,
-    path TEXT,
-    referrer TEXT,
-    source TEXT,
-    metadata_json TEXT,
-    created_at TEXT NOT NULL,
-    date_key TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS public_papers (
-    arxiv_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    abstract TEXT NOT NULL,
-    authors_json TEXT NOT NULL,
-    categories_json TEXT NOT NULL,
-    analysis_json TEXT NOT NULL,
-    share_slug TEXT NOT NULL UNIQUE,
-    analyzed_count INTEGER NOT NULL DEFAULT 1,
-    first_analyzed_at TEXT NOT NULL,
-    last_analyzed_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    is_public INTEGER NOT NULL DEFAULT 1
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
-  CREATE INDEX IF NOT EXISTS idx_recent_user_viewed_at ON recent_papers (user_id, viewed_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_recent_user_arxiv ON recent_papers (user_id, arxiv_id);
-  CREATE INDEX IF NOT EXISTS idx_bookmarks_user_updated_at ON bookmarks (user_id, updated_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_bookmarks_user_arxiv ON bookmarks (user_id, arxiv_id);
-  CREATE INDEX IF NOT EXISTS idx_analytics_event_date ON analytics_events (event_name, date_key);
-  CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events (created_at);
-  CREATE INDEX IF NOT EXISTS idx_analytics_arxiv ON analytics_events (arxiv_id);
-  CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events (user_id, date_key);
-  CREATE INDEX IF NOT EXISTS idx_public_papers_analyzed ON public_papers (analyzed_count DESC, last_analyzed_at DESC);
-`);
-
-// Keep orphan rows cleaned up for DBs that predate FK constraints.
-db.exec(`
-  DELETE FROM recent_papers WHERE user_id NOT IN (SELECT id FROM users);
-  DELETE FROM bookmarks WHERE user_id NOT IN (SELECT id FROM users);
-`);
 
 interface UserRow {
   id: string;
@@ -172,10 +96,10 @@ interface PaperRow {
 interface PublicPaperRow extends PaperRow {
   analysis_json: string;
   share_slug: string;
-  analyzed_count: number;
+  analyzed_count: number | string;
   first_analyzed_at: string;
   last_analyzed_at: string;
-  is_public: number;
+  is_public: boolean | number;
 }
 
 export interface AppUser {
@@ -263,204 +187,6 @@ export interface PublicPaper {
   lastAnalyzedAt: string;
 }
 
-const MAX_RECENTS_PER_USER = 120;
-const MAX_BOOKMARKS_PER_USER = 600;
-
-const getUserByEmailStmt = db.prepare('SELECT * FROM users WHERE email = ? LIMIT 1');
-const getUserByIdStmt = db.prepare('SELECT * FROM users WHERE id = ? LIMIT 1');
-
-const insertUserStmt = db.prepare(
-  `INSERT INTO users (id, email, name, password_hash, auth_provider, image, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-);
-
-const updateOAuthUserStmt = db.prepare(
-  `UPDATE users
-   SET name = COALESCE(?, name),
-       image = COALESCE(?, image),
-       auth_provider = ?,
-       updated_at = ?
-   WHERE id = ?`
-);
-
-const updateSessionUserStmt = db.prepare(
-  `UPDATE users
-   SET name = COALESCE(?, name),
-       image = COALESCE(?, image),
-       auth_provider = ?,
-       updated_at = ?
-   WHERE id = ?`
-);
-
-const upsertRecentStmt = db.prepare(
-  `INSERT INTO recent_papers (user_id, arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-   ON CONFLICT(user_id, arxiv_id)
-   DO UPDATE SET
-     title = excluded.title,
-     abstract = excluded.abstract,
-     authors_json = excluded.authors_json,
-     categories_json = excluded.categories_json,
-     viewed_at = excluded.viewed_at`
-);
-
-const trimRecentsStmt = db.prepare(
-  `DELETE FROM recent_papers
-   WHERE user_id = ?
-     AND id NOT IN (
-       SELECT id FROM recent_papers
-       WHERE user_id = ?
-       ORDER BY viewed_at DESC
-       LIMIT ?
-     )`
-);
-
-const upsertBookmarkStmt = db.prepare(
-  `INSERT INTO bookmarks (user_id, arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-   ON CONFLICT(user_id, arxiv_id)
-   DO UPDATE SET
-     title = excluded.title,
-     abstract = excluded.abstract,
-     authors_json = excluded.authors_json,
-     categories_json = excluded.categories_json,
-     updated_at = excluded.updated_at`
-);
-
-const trimBookmarksStmt = db.prepare(
-  `DELETE FROM bookmarks
-   WHERE user_id = ?
-     AND id NOT IN (
-       SELECT id FROM bookmarks
-       WHERE user_id = ?
-       ORDER BY updated_at DESC
-       LIMIT ?
-     )`
-);
-
-const removeBookmarkStmt = db.prepare(
-  'DELETE FROM bookmarks WHERE user_id = ? AND arxiv_id = ?'
-);
-
-const isBookmarkedStmt = db.prepare(
-  'SELECT 1 AS found FROM bookmarks WHERE user_id = ? AND arxiv_id = ? LIMIT 1'
-);
-
-const listBookmarksStmt = db.prepare(
-  `SELECT arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at
-   FROM bookmarks
-   WHERE user_id = ?
-   ORDER BY updated_at DESC
-   LIMIT ?`
-);
-
-const listRecentPapersStmt = db.prepare(
-  `SELECT arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at
-   FROM recent_papers
-   WHERE user_id = ?
-   ORDER BY viewed_at DESC
-   LIMIT ?`
-);
-
-const insertAnalyticsEventStmt = db.prepare(
-  `INSERT INTO analytics_events
-   (event_name, user_id, anonymous_id, arxiv_id, title, path, referrer, source, metadata_json, created_at, date_key)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-);
-
-const upsertPublicPaperStmt = db.prepare(
-  `INSERT INTO public_papers
-   (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
-   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
-   ON CONFLICT(arxiv_id)
-   DO UPDATE SET
-     title = excluded.title,
-     abstract = excluded.abstract,
-     authors_json = excluded.authors_json,
-     categories_json = excluded.categories_json,
-     analysis_json = excluded.analysis_json,
-     analyzed_count = public_papers.analyzed_count + 1,
-     last_analyzed_at = excluded.last_analyzed_at,
-     updated_at = excluded.updated_at,
-     is_public = 1`
-);
-
-const upsertPublicPaperSnapshotStmt = db.prepare(
-  `INSERT INTO public_papers
-   (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
-   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
-   ON CONFLICT(arxiv_id)
-   DO UPDATE SET
-     title = excluded.title,
-     abstract = excluded.abstract,
-     authors_json = excluded.authors_json,
-     categories_json = excluded.categories_json,
-     analysis_json = excluded.analysis_json,
-     updated_at = excluded.updated_at,
-     is_public = 1`
-);
-
-const incrementPublicPaperAnalysisStmt = db.prepare(
-  `UPDATE public_papers
-   SET analyzed_count = analyzed_count + 1,
-       last_analyzed_at = ?,
-       updated_at = ?
-   WHERE arxiv_id = ? AND is_public = 1`
-);
-
-const getPublicPaperStmt = db.prepare(
-  `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
-          analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
-   FROM public_papers
-   WHERE arxiv_id = ? AND is_public = 1
-   LIMIT 1`
-);
-
-const listPublicPapersStmt = db.prepare(
-  `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
-          analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
-   FROM public_papers
-   WHERE is_public = 1
-   ORDER BY analyzed_count DESC, last_analyzed_at DESC
-   LIMIT ?`
-);
-
-const upsertRecentTxn = db.transaction((userId: string, paperInput: UserPaperInput) => {
-  const paper = normalizeArxivInput(paperInput);
-  const now = nowIso();
-
-  upsertRecentStmt.run(
-    userId,
-    paper.arxivId,
-    paper.title,
-    paper.abstract ?? '',
-    encodeList(paper.authors),
-    encodeList(paper.categories),
-    now,
-    now
-  );
-
-  trimRecentsStmt.run(userId, userId, MAX_RECENTS_PER_USER);
-});
-
-const upsertBookmarkTxn = db.transaction((userId: string, paperInput: UserPaperInput) => {
-  const paper = normalizeArxivInput(paperInput);
-  const now = nowIso();
-
-  upsertBookmarkStmt.run(
-    userId,
-    paper.arxivId,
-    paper.title,
-    paper.abstract ?? '',
-    encodeList(paper.authors),
-    encodeList(paper.categories),
-    now,
-    now
-  );
-
-  trimBookmarksStmt.run(userId, userId, MAX_BOOKMARKS_PER_USER);
-});
-
 function mapUser(row: UserRow | undefined): AppUser | null {
   if (!row) return null;
   return {
@@ -486,34 +212,6 @@ function mapPaper(row: PaperRow): StoredPaper {
   };
 }
 
-function dateKey(date = new Date()): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function daysAgo(days: number): string {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - days);
-  return date.toISOString();
-}
-
-function cleanOptional(value: string | null | undefined, max = 500): string | null {
-  if (!value) return null;
-  const cleaned = cleanString(value);
-  return cleaned ? cleaned.slice(0, max) : null;
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value ?? {});
-  } catch {
-    return '{}';
-  }
-}
-
-function shareSlug(arxivId: string): string {
-  return cleanString(arxivId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-}
-
 function mapPublicPaper(row: PublicPaperRow | undefined): PublicPaper | null {
   if (!row) return null;
   let analysis: unknown = null;
@@ -530,29 +228,302 @@ function mapPublicPaper(row: PublicPaperRow | undefined): PublicPaper | null {
     categories: decodeList(row.categories_json),
     analysis,
     shareSlug: row.share_slug,
-    analyzedCount: row.analyzed_count,
+    analyzedCount: numberValue(row.analyzed_count),
     firstAnalyzedAt: row.first_analyzed_at,
     lastAnalyzedAt: row.last_analyzed_at,
   };
 }
 
-export function getUserByEmail(email: string): AppUser | null {
-  const row = getUserByEmailStmt.get(cleanString(email).toLowerCase()) as UserRow | undefined;
+function getSqliteDb(): Database.Database {
+  if (sqliteDb) return sqliteDb;
+
+  const dbPath = resolve(process.cwd(), process.env.DATABASE_PATH || 'data/paperlens.db');
+  const dbDir = dirname(dbPath);
+  if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+
+  const db = new Database(dbPath);
+
+  for (const statement of [
+    'journal_mode = WAL',
+    'synchronous = NORMAL',
+    'busy_timeout = 5000',
+    'foreign_keys = ON',
+    'temp_store = MEMORY',
+    'cache_size = -16000',
+    'wal_autocheckpoint = 1000',
+    'journal_size_limit = 67108864',
+    'mmap_size = 268435456',
+  ]) {
+    try {
+      db.pragma(statement);
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`SQLite pragma skipped: ${statement}`, error);
+      }
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT,
+      password_hash TEXT,
+      auth_provider TEXT NOT NULL DEFAULT 'credentials',
+      image TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS recent_papers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      arxiv_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      abstract TEXT NOT NULL,
+      authors_json TEXT NOT NULL,
+      categories_json TEXT NOT NULL,
+      viewed_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, arxiv_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      arxiv_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      abstract TEXT NOT NULL,
+      authors_json TEXT NOT NULL,
+      categories_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, arxiv_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_name TEXT NOT NULL,
+      user_id TEXT,
+      anonymous_id TEXT,
+      arxiv_id TEXT,
+      title TEXT,
+      path TEXT,
+      referrer TEXT,
+      source TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      date_key TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS public_papers (
+      arxiv_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      abstract TEXT NOT NULL,
+      authors_json TEXT NOT NULL,
+      categories_json TEXT NOT NULL,
+      analysis_json TEXT NOT NULL,
+      share_slug TEXT NOT NULL UNIQUE,
+      analyzed_count INTEGER NOT NULL DEFAULT 1,
+      first_analyzed_at TEXT NOT NULL,
+      last_analyzed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      is_public INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+    CREATE INDEX IF NOT EXISTS idx_recent_user_viewed_at ON recent_papers (user_id, viewed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_recent_user_arxiv ON recent_papers (user_id, arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_bookmarks_user_updated_at ON bookmarks (user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_bookmarks_user_arxiv ON bookmarks (user_id, arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_analytics_event_date ON analytics_events (event_name, date_key);
+    CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events (created_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_arxiv ON analytics_events (arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events (user_id, date_key);
+    CREATE INDEX IF NOT EXISTS idx_public_papers_analyzed ON public_papers (analyzed_count DESC, last_analyzed_at DESC);
+
+    DELETE FROM recent_papers WHERE user_id NOT IN (SELECT id FROM users);
+    DELETE FROM bookmarks WHERE user_id NOT IN (SELECT id FROM users);
+  `);
+
+  sqliteDb = db;
+  return db;
+}
+
+function getPostgresPool(): Pool {
+  if (postgresPool) return postgresPool;
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error('DATABASE_URL is required for Postgres.');
+
+  const usesLocalPostgres = /(?:localhost|127\.0\.0\.1)/i.test(connectionString);
+  let normalizedConnectionString = connectionString;
+  if (!usesLocalPostgres) {
+    const url = new URL(connectionString);
+    url.searchParams.set('sslmode', 'verify-full');
+    normalizedConnectionString = url.toString();
+  }
+
+  postgresPool = new Pool({
+    connectionString: normalizedConnectionString,
+    max: 5,
+  });
+  return postgresPool;
+}
+
+async function ensurePostgresSchema(): Promise<void> {
+  if (!postgresReady) {
+    postgresReady = (async () => {
+      const pool = getPostgresPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          name TEXT,
+          password_hash TEXT,
+          auth_provider TEXT NOT NULL DEFAULT 'credentials',
+          image TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS recent_papers (
+          id BIGSERIAL PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          arxiv_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          abstract TEXT NOT NULL,
+          authors_json TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          viewed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(user_id, arxiv_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS bookmarks (
+          id BIGSERIAL PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          arxiv_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          abstract TEXT NOT NULL,
+          authors_json TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(user_id, arxiv_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_events (
+          id BIGSERIAL PRIMARY KEY,
+          event_name TEXT NOT NULL,
+          user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          anonymous_id TEXT,
+          arxiv_id TEXT,
+          title TEXT,
+          path TEXT,
+          referrer TEXT,
+          source TEXT,
+          metadata_json TEXT,
+          created_at TEXT NOT NULL,
+          date_key TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS public_papers (
+          arxiv_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          abstract TEXT NOT NULL,
+          authors_json TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          analysis_json TEXT NOT NULL,
+          share_slug TEXT NOT NULL UNIQUE,
+          analyzed_count INTEGER NOT NULL DEFAULT 1,
+          first_analyzed_at TEXT NOT NULL,
+          last_analyzed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          is_public BOOLEAN NOT NULL DEFAULT TRUE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+        CREATE INDEX IF NOT EXISTS idx_recent_user_viewed_at ON recent_papers (user_id, viewed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_recent_user_arxiv ON recent_papers (user_id, arxiv_id);
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_user_updated_at ON bookmarks (user_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_user_arxiv ON bookmarks (user_id, arxiv_id);
+        CREATE INDEX IF NOT EXISTS idx_analytics_event_date ON analytics_events (event_name, date_key);
+        CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events (created_at);
+        CREATE INDEX IF NOT EXISTS idx_analytics_arxiv ON analytics_events (arxiv_id);
+        CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events (user_id, date_key);
+        CREATE INDEX IF NOT EXISTS idx_public_papers_analyzed ON public_papers (analyzed_count DESC, last_analyzed_at DESC);
+      `);
+    })();
+  }
+  await postgresReady;
+}
+
+function toPostgresPlaceholders(sql: string): string {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
+
+async function pgRows<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+  await ensurePostgresSchema();
+  const result = await getPostgresPool().query(sql, params);
+  return result.rows as T[];
+}
+
+async function withPostgresTransaction<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
+  await ensurePostgresSchema();
+  const client = await getPostgresPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function pgScalarCount(sql: string, params: unknown[] = []): Promise<number> {
+  const rows = await pgRows<{ value: string | number }>(toPostgresPlaceholders(sql), params);
+  return numberValue(rows[0]?.value);
+}
+
+function sqliteScalarCount(sql: string, params: unknown[] = []): number {
+  const row = getSqliteDb().prepare(sql).get(...params) as { value?: number } | undefined;
+  return numberValue(row?.value);
+}
+
+export async function getUserByEmail(email: string): Promise<AppUser | null> {
+  const normalizedEmail = cleanString(email).toLowerCase();
+  if (hasPostgres) {
+    const rows = await pgRows<UserRow>('SELECT * FROM users WHERE email = $1 LIMIT 1', [normalizedEmail]);
+    return mapUser(rows[0]);
+  }
+  const row = getSqliteDb().prepare('SELECT * FROM users WHERE email = ? LIMIT 1').get(normalizedEmail) as UserRow | undefined;
   return mapUser(row);
 }
 
-export function getUserById(id: string): AppUser | null {
-  const row = getUserByIdStmt.get(id) as UserRow | undefined;
+export async function getUserById(id: string): Promise<AppUser | null> {
+  if (hasPostgres) {
+    const rows = await pgRows<UserRow>('SELECT * FROM users WHERE id = $1 LIMIT 1', [id]);
+    return mapUser(rows[0]);
+  }
+  const row = getSqliteDb().prepare('SELECT * FROM users WHERE id = ? LIMIT 1').get(id) as UserRow | undefined;
   return mapUser(row);
 }
 
-export function createUser(input: {
+export async function createUser(input: {
   email: string;
   name?: string | null;
   passwordHash?: string | null;
   provider?: string;
   image?: string | null;
-}): AppUser {
+}): Promise<AppUser> {
   const user: AppUser = {
     id: randomUUID(),
     email: cleanString(input.email).toLowerCase(),
@@ -561,158 +532,352 @@ export function createUser(input: {
     provider: input.provider ?? 'credentials',
     image: input.image ?? null,
   };
-
   const now = nowIso();
 
   try {
-    insertUserStmt.run(
-      user.id,
-      user.email,
-      user.name,
-      user.passwordHash,
-      user.provider,
-      user.image,
-      now,
-      now
-    );
+    if (hasPostgres) {
+      await pgRows(
+        `INSERT INTO users (id, email, name, password_hash, auth_provider, image, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [user.id, user.email, user.name, user.passwordHash, user.provider, user.image, now, now]
+      );
+      return user;
+    }
+
+    getSqliteDb()
+      .prepare(
+        `INSERT INTO users (id, email, name, password_hash, auth_provider, image, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(user.id, user.email, user.name, user.passwordHash, user.provider, user.image, now, now);
     return user;
   } catch (error) {
-    if (isConstraintError(error)) {
-      throw new DuplicateEmailError();
-    }
+    if (isDuplicateError(error)) throw new DuplicateEmailError();
     throw error;
   }
 }
 
-export function ensureOAuthUser(input: {
+export async function ensureOAuthUser(input: {
   email: string;
   name?: string | null;
   image?: string | null;
   provider: string;
-}): AppUser {
+}): Promise<AppUser> {
   const email = cleanString(input.email).toLowerCase();
-  const existing = getUserByEmail(email);
+  const existing = await getUserByEmail(email);
+  const name = input.name ? cleanString(input.name) : null;
+  const image = input.image ?? null;
 
   if (existing) {
-    updateOAuthUserStmt.run(
-      input.name ? cleanString(input.name) : null,
-      input.image ?? null,
-      existing.provider === 'credentials' ? existing.provider : input.provider,
-      nowIso(),
-      existing.id
-    );
-    return getUserById(existing.id) ?? existing;
+    const provider = existing.provider === 'credentials' ? existing.provider : input.provider;
+    if (hasPostgres) {
+      await pgRows(
+        `UPDATE users
+         SET name = COALESCE($1, name),
+             image = COALESCE($2, image),
+             auth_provider = $3,
+             updated_at = $4
+         WHERE id = $5`,
+        [name, image, provider, nowIso(), existing.id]
+      );
+    } else {
+      getSqliteDb()
+        .prepare(
+          `UPDATE users
+           SET name = COALESCE(?, name),
+               image = COALESCE(?, image),
+               auth_provider = ?,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(name, image, provider, nowIso(), existing.id);
+    }
+    return (await getUserById(existing.id)) ?? existing;
   }
 
   try {
-    return createUser({
-      email,
-      name: input.name,
-      provider: input.provider,
-      image: input.image,
-    });
+    return await createUser({ email, name, provider: input.provider, image });
   } catch (error) {
     if (error instanceof DuplicateEmailError) {
-      // Race-safe fallback when two OAuth callbacks land simultaneously.
-      return getUserByEmail(email) ?? (() => { throw error; })();
+      const user = await getUserByEmail(email);
+      if (user) return user;
     }
     throw error;
   }
 }
 
-export function ensureSessionUser(input: {
+export async function ensureSessionUser(input: {
   id?: string | null;
   email?: string | null;
   name?: string | null;
   image?: string | null;
   provider?: string;
-}): AppUser | null {
+}): Promise<AppUser | null> {
   const email = cleanString(input.email ?? '').toLowerCase();
   if (!email) return null;
 
   const preferredId = input.id ? cleanString(input.id) : null;
+  const name = input.name ? cleanString(input.name) : null;
+  const image = input.image ?? null;
+
+  async function updateUser(existing: AppUser): Promise<AppUser> {
+    const provider = input.provider ?? existing.provider;
+    if (hasPostgres) {
+      await pgRows(
+        `UPDATE users
+         SET name = COALESCE($1, name),
+             image = COALESCE($2, image),
+             auth_provider = $3,
+             updated_at = $4
+         WHERE id = $5`,
+        [name, image, provider, nowIso(), existing.id]
+      );
+    } else {
+      getSqliteDb()
+        .prepare(
+          `UPDATE users
+           SET name = COALESCE(?, name),
+               image = COALESCE(?, image),
+               auth_provider = ?,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(name, image, provider, nowIso(), existing.id);
+    }
+    return (await getUserById(existing.id)) ?? existing;
+  }
 
   if (preferredId) {
-    const existingById = getUserById(preferredId);
-    if (existingById) {
-      updateSessionUserStmt.run(
-        input.name ? cleanString(input.name) : null,
-        input.image ?? null,
-        input.provider ?? existingById.provider,
-        nowIso(),
-        preferredId
-      );
-      return getUserById(preferredId) ?? existingById;
-    }
+    const existingById = await getUserById(preferredId);
+    if (existingById) return updateUser(existingById);
   }
 
-  const existingByEmail = getUserByEmail(email);
-  if (existingByEmail) {
-    updateSessionUserStmt.run(
-      input.name ? cleanString(input.name) : null,
-      input.image ?? null,
-      input.provider ?? existingByEmail.provider,
-      nowIso(),
-      existingByEmail.id
-    );
-    return getUserById(existingByEmail.id) ?? existingByEmail;
-  }
-
-  const now = nowIso();
-  const userId = preferredId ?? randomUUID();
+  const existingByEmail = await getUserByEmail(email);
+  if (existingByEmail) return updateUser(existingByEmail);
 
   try {
-    insertUserStmt.run(
-      userId,
-      email,
-      input.name ? cleanString(input.name) : null,
-      null,
-      input.provider ?? 'credentials',
-      input.image ?? null,
-      now,
-      now
-    );
+    const userId = preferredId ?? randomUUID();
+    const now = nowIso();
+    if (hasPostgres) {
+      await pgRows(
+        `INSERT INTO users (id, email, name, password_hash, auth_provider, image, created_at, updated_at)
+         VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)`,
+        [userId, email, name, input.provider ?? 'credentials', image, now, now]
+      );
+    } else {
+      getSqliteDb()
+        .prepare(
+          `INSERT INTO users (id, email, name, password_hash, auth_provider, image, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`
+        )
+        .run(userId, email, name, input.provider ?? 'credentials', image, now, now);
+    }
     return getUserById(userId);
   } catch (error) {
-    if (isConstraintError(error)) {
-      return getUserByEmail(email);
-    }
+    if (isDuplicateError(error)) return getUserByEmail(email);
     throw error;
   }
 }
 
-export function upsertRecentPaper(userId: string, paperInput: UserPaperInput) {
-  upsertRecentTxn(userId, paperInput);
+export async function upsertRecentPaper(userId: string, paperInput: UserPaperInput): Promise<void> {
+  const paper = normalizeArxivInput(paperInput);
+  const now = nowIso();
+
+  if (hasPostgres) {
+    await withPostgresTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO recent_papers (user_id, arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT(user_id, arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           viewed_at = excluded.viewed_at`,
+        [userId, paper.arxivId, paper.title, paper.abstract ?? '', encodeList(paper.authors), encodeList(paper.categories), now, now]
+      );
+      await client.query(
+        `DELETE FROM recent_papers
+         WHERE user_id = $1
+           AND id NOT IN (
+             SELECT id FROM recent_papers
+             WHERE user_id = $1
+             ORDER BY viewed_at DESC
+             LIMIT $2
+           )`,
+        [userId, MAX_RECENTS_PER_USER]
+      );
+    });
+    return;
+  }
+
+  getSqliteDb().transaction(() => {
+    getSqliteDb()
+      .prepare(
+        `INSERT INTO recent_papers (user_id, arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           viewed_at = excluded.viewed_at`
+      )
+      .run(userId, paper.arxivId, paper.title, paper.abstract ?? '', encodeList(paper.authors), encodeList(paper.categories), now, now);
+    getSqliteDb()
+      .prepare(
+        `DELETE FROM recent_papers
+         WHERE user_id = ?
+           AND id NOT IN (
+             SELECT id FROM recent_papers
+             WHERE user_id = ?
+             ORDER BY viewed_at DESC
+             LIMIT ?
+           )`
+      )
+      .run(userId, userId, MAX_RECENTS_PER_USER);
+  })();
 }
 
-export function upsertBookmark(userId: string, paperInput: UserPaperInput) {
-  upsertBookmarkTxn(userId, paperInput);
+export async function upsertBookmark(userId: string, paperInput: UserPaperInput): Promise<void> {
+  const paper = normalizeArxivInput(paperInput);
+  const now = nowIso();
+
+  if (hasPostgres) {
+    await withPostgresTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO bookmarks (user_id, arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT(user_id, arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           updated_at = excluded.updated_at`,
+        [userId, paper.arxivId, paper.title, paper.abstract ?? '', encodeList(paper.authors), encodeList(paper.categories), now, now]
+      );
+      await client.query(
+        `DELETE FROM bookmarks
+         WHERE user_id = $1
+           AND id NOT IN (
+             SELECT id FROM bookmarks
+             WHERE user_id = $1
+             ORDER BY updated_at DESC
+             LIMIT $2
+           )`,
+        [userId, MAX_BOOKMARKS_PER_USER]
+      );
+    });
+    return;
+  }
+
+  getSqliteDb().transaction(() => {
+    getSqliteDb()
+      .prepare(
+        `INSERT INTO bookmarks (user_id, arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           updated_at = excluded.updated_at`
+      )
+      .run(userId, paper.arxivId, paper.title, paper.abstract ?? '', encodeList(paper.authors), encodeList(paper.categories), now, now);
+    getSqliteDb()
+      .prepare(
+        `DELETE FROM bookmarks
+         WHERE user_id = ?
+           AND id NOT IN (
+             SELECT id FROM bookmarks
+             WHERE user_id = ?
+             ORDER BY updated_at DESC
+             LIMIT ?
+           )`
+      )
+      .run(userId, userId, MAX_BOOKMARKS_PER_USER);
+  })();
 }
 
-export function removeBookmark(userId: string, arxivId: string) {
-  removeBookmarkStmt.run(userId, cleanString(arxivId));
+export async function removeBookmark(userId: string, arxivId: string): Promise<void> {
+  if (hasPostgres) {
+    await pgRows('DELETE FROM bookmarks WHERE user_id = $1 AND arxiv_id = $2', [userId, cleanString(arxivId)]);
+    return;
+  }
+  getSqliteDb().prepare('DELETE FROM bookmarks WHERE user_id = ? AND arxiv_id = ?').run(userId, cleanString(arxivId));
 }
 
-export function isBookmarked(userId: string, arxivId: string): boolean {
-  const row = isBookmarkedStmt.get(userId, cleanString(arxivId)) as { found?: number } | undefined;
+export async function isBookmarked(userId: string, arxivId: string): Promise<boolean> {
+  if (hasPostgres) {
+    const rows = await pgRows<{ found: number }>('SELECT 1 AS found FROM bookmarks WHERE user_id = $1 AND arxiv_id = $2 LIMIT 1', [
+      userId,
+      cleanString(arxivId),
+    ]);
+    return Boolean(rows[0]?.found);
+  }
+  const row = getSqliteDb()
+    .prepare('SELECT 1 AS found FROM bookmarks WHERE user_id = ? AND arxiv_id = ? LIMIT 1')
+    .get(userId, cleanString(arxivId)) as { found?: number } | undefined;
   return Boolean(row?.found);
 }
 
-export function listBookmarks(userId: string, limit = 30): StoredPaper[] {
+export async function listBookmarks(userId: string, limit = 30): Promise<StoredPaper[]> {
   const safeLimit = clampLimit(limit, 1, 200, 30);
-  const rows = listBookmarksStmt.all(userId, safeLimit) as PaperRow[];
+  if (hasPostgres) {
+    const rows = await pgRows<PaperRow>(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at
+       FROM bookmarks
+       WHERE user_id = $1
+       ORDER BY updated_at DESC
+       LIMIT $2`,
+      [userId, safeLimit]
+    );
+    return rows.map(mapPaper);
+  }
+  const rows = getSqliteDb()
+    .prepare(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, created_at, updated_at
+       FROM bookmarks
+       WHERE user_id = ?
+       ORDER BY updated_at DESC
+       LIMIT ?`
+    )
+    .all(userId, safeLimit) as PaperRow[];
   return rows.map(mapPaper);
 }
 
-export function listRecentPapers(userId: string, limit = 20): StoredPaper[] {
+export async function listRecentPapers(userId: string, limit = 20): Promise<StoredPaper[]> {
   const safeLimit = clampLimit(limit, 1, 200, 20);
-  const rows = listRecentPapersStmt.all(userId, safeLimit) as PaperRow[];
+  if (hasPostgres) {
+    const rows = await pgRows<PaperRow>(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at
+       FROM recent_papers
+       WHERE user_id = $1
+       ORDER BY viewed_at DESC
+       LIMIT $2`,
+      [userId, safeLimit]
+    );
+    return rows.map(mapPaper);
+  }
+  const rows = getSqliteDb()
+    .prepare(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, viewed_at, created_at
+       FROM recent_papers
+       WHERE user_id = ?
+       ORDER BY viewed_at DESC
+       LIMIT ?`
+    )
+    .all(userId, safeLimit) as PaperRow[];
   return rows.map(mapPaper);
 }
 
-export function trackAnalyticsEvent(input: AnalyticsEventInput) {
+export async function trackAnalyticsEvent(input: AnalyticsEventInput): Promise<void> {
   const now = nowIso();
-  insertAnalyticsEventStmt.run(
+  const values = [
     cleanString(input.eventName).slice(0, 80),
     cleanOptional(input.userId, 120),
     cleanOptional(input.anonymousId, 120),
@@ -723,21 +888,39 @@ export function trackAnalyticsEvent(input: AnalyticsEventInput) {
     cleanOptional(input.source, 160),
     safeJson(input.metadata),
     now,
-    dateKey(new Date(now))
-  );
+    dateKey(new Date(now)),
+  ];
+
+  if (hasPostgres) {
+    await pgRows(
+      `INSERT INTO analytics_events
+       (event_name, user_id, anonymous_id, arxiv_id, title, path, referrer, source, metadata_json, created_at, date_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      values
+    );
+    return;
+  }
+
+  getSqliteDb()
+    .prepare(
+      `INSERT INTO analytics_events
+       (event_name, user_id, anonymous_id, arxiv_id, title, path, referrer, source, metadata_json, created_at, date_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(...values);
 }
 
-export function savePublicPaper(input: {
+export async function savePublicPaper(input: {
   arxivId: string;
   title: string;
   abstract?: string;
   authors?: string[];
   categories?: string[];
   analysis: unknown;
-}): PublicPaper {
+}): Promise<PublicPaper> {
   const paper = normalizeArxivInput(input);
   const now = nowIso();
-  upsertPublicPaperStmt.run(
+  const values = [
     paper.arxivId,
     paper.title,
     paper.abstract ?? '',
@@ -747,27 +930,64 @@ export function savePublicPaper(input: {
     shareSlug(paper.arxivId),
     now,
     now,
-    now
-  );
+    now,
+  ];
 
-  const saved = getPublicPaper(paper.arxivId);
-  if (!saved) {
-    throw new Error('Unable to save public paper.');
+  if (hasPostgres) {
+    await pgRows(
+      `INSERT INTO public_papers
+       (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9, $10, TRUE)
+       ON CONFLICT(arxiv_id)
+       DO UPDATE SET
+         title = excluded.title,
+         abstract = excluded.abstract,
+         authors_json = excluded.authors_json,
+         categories_json = excluded.categories_json,
+         analysis_json = excluded.analysis_json,
+         analyzed_count = public_papers.analyzed_count + 1,
+         last_analyzed_at = excluded.last_analyzed_at,
+         updated_at = excluded.updated_at,
+         is_public = TRUE`,
+      values
+    );
+  } else {
+    getSqliteDb()
+      .prepare(
+        `INSERT INTO public_papers
+         (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
+         ON CONFLICT(arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           analysis_json = excluded.analysis_json,
+           analyzed_count = public_papers.analyzed_count + 1,
+           last_analyzed_at = excluded.last_analyzed_at,
+           updated_at = excluded.updated_at,
+           is_public = 1`
+      )
+      .run(...values);
   }
+
+  const saved = await getPublicPaper(paper.arxivId);
+  if (!saved) throw new Error('Unable to save public paper.');
   return saved;
 }
 
-export function savePublicPaperSnapshot(input: {
+export async function savePublicPaperSnapshot(input: {
   arxivId: string;
   title: string;
   abstract?: string;
   authors?: string[];
   categories?: string[];
   analysis: unknown;
-}): PublicPaper {
+}): Promise<PublicPaper> {
   const paper = normalizeArxivInput(input);
   const now = nowIso();
-  upsertPublicPaperSnapshotStmt.run(
+  const values = [
     paper.arxivId,
     paper.title,
     paper.abstract ?? '',
@@ -777,88 +997,173 @@ export function savePublicPaperSnapshot(input: {
     shareSlug(paper.arxivId),
     now,
     now,
-    now
-  );
+    now,
+  ];
 
-  const saved = getPublicPaper(paper.arxivId);
-  if (!saved) {
-    throw new Error('Unable to save public paper.');
+  if (hasPostgres) {
+    await pgRows(
+      `INSERT INTO public_papers
+       (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9, $10, TRUE)
+       ON CONFLICT(arxiv_id)
+       DO UPDATE SET
+         title = excluded.title,
+         abstract = excluded.abstract,
+         authors_json = excluded.authors_json,
+         categories_json = excluded.categories_json,
+         analysis_json = excluded.analysis_json,
+         updated_at = excluded.updated_at,
+         is_public = TRUE`,
+      values
+    );
+  } else {
+    getSqliteDb()
+      .prepare(
+        `INSERT INTO public_papers
+         (arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug, analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
+         ON CONFLICT(arxiv_id)
+         DO UPDATE SET
+           title = excluded.title,
+           abstract = excluded.abstract,
+           authors_json = excluded.authors_json,
+           categories_json = excluded.categories_json,
+           analysis_json = excluded.analysis_json,
+           updated_at = excluded.updated_at,
+           is_public = 1`
+      )
+      .run(...values);
   }
+
+  const saved = await getPublicPaper(paper.arxivId);
+  if (!saved) throw new Error('Unable to save public paper.');
   return saved;
 }
 
-export function getPublicPaper(arxivId: string): PublicPaper | null {
-  const row = getPublicPaperStmt.get(cleanString(arxivId)) as PublicPaperRow | undefined;
+export async function getPublicPaper(arxivId: string): Promise<PublicPaper | null> {
+  const cleaned = cleanString(arxivId);
+  if (hasPostgres) {
+    const rows = await pgRows<PublicPaperRow>(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+              analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+       FROM public_papers
+       WHERE arxiv_id = $1 AND is_public = TRUE
+       LIMIT 1`,
+      [cleaned]
+    );
+    return mapPublicPaper(rows[0]);
+  }
+  const row = getSqliteDb()
+    .prepare(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+              analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+       FROM public_papers
+       WHERE arxiv_id = ? AND is_public = 1
+       LIMIT 1`
+    )
+    .get(cleaned) as PublicPaperRow | undefined;
   return mapPublicPaper(row);
 }
 
-export function recordPublicPaperAnalysis(arxivId: string) {
+export async function recordPublicPaperAnalysis(arxivId: string): Promise<void> {
   const now = nowIso();
-  incrementPublicPaperAnalysisStmt.run(now, now, cleanString(arxivId));
+  if (hasPostgres) {
+    await pgRows(
+      `UPDATE public_papers
+       SET analyzed_count = analyzed_count + 1,
+           last_analyzed_at = $1,
+           updated_at = $2
+       WHERE arxiv_id = $3 AND is_public = TRUE`,
+      [now, now, cleanString(arxivId)]
+    );
+    return;
+  }
+  getSqliteDb()
+    .prepare(
+      `UPDATE public_papers
+       SET analyzed_count = analyzed_count + 1,
+           last_analyzed_at = ?,
+           updated_at = ?
+       WHERE arxiv_id = ? AND is_public = 1`
+    )
+    .run(now, now, cleanString(arxivId));
 }
 
-export function listPublicPapers(limit = 8): PublicPaper[] {
+export async function listPublicPapers(limit = 8): Promise<PublicPaper[]> {
   const safeLimit = clampLimit(limit, 1, 24, 8);
-  const rows = listPublicPapersStmt.all(safeLimit) as PublicPaperRow[];
+  if (hasPostgres) {
+    const rows = await pgRows<PublicPaperRow>(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+              analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+       FROM public_papers
+       WHERE is_public = TRUE
+       ORDER BY analyzed_count DESC, last_analyzed_at DESC
+       LIMIT $1`,
+      [safeLimit]
+    );
+    return rows.map(mapPublicPaper).filter((paper): paper is PublicPaper => Boolean(paper));
+  }
+  const rows = getSqliteDb()
+    .prepare(
+      `SELECT arxiv_id, title, abstract, authors_json, categories_json, analysis_json, share_slug,
+              analyzed_count, first_analyzed_at, last_analyzed_at, updated_at, is_public
+       FROM public_papers
+       WHERE is_public = 1
+       ORDER BY analyzed_count DESC, last_analyzed_at DESC
+       LIMIT ?`
+    )
+    .all(safeLimit) as PublicPaperRow[];
   return rows.map(mapPublicPaper).filter((paper): paper is PublicPaper => Boolean(paper));
 }
 
-function scalarCount(sql: string, params: unknown[] = []): number {
-  const row = db.prepare(sql).get(...params) as { value?: number } | undefined;
-  return Number(row?.value ?? 0);
-}
-
-export function getAnalyticsSummary(): AnalyticsSummary {
+export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   const today = dateKey();
   const since30 = daysAgo(30);
   const since14 = daysAgo(14);
   const since7 = daysAgo(7);
+  const since180 = daysAgo(180);
 
-  const registeredUsers = scalarCount('SELECT COUNT(*) AS value FROM users');
-  const dailyActiveUsers = scalarCount(
+  const scalarCount = hasPostgres ? pgScalarCount : async (sql: string, params: unknown[] = []) => sqliteScalarCount(sql, params);
+  const eventCount = (eventName: string, since: string) =>
+    scalarCount('SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = ? AND created_at >= ?', [eventName, since]);
+
+  const registeredUsers = await scalarCount('SELECT COUNT(*) AS value FROM users');
+  const dailyActiveUsers = await scalarCount(
     `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
      FROM analytics_events
      WHERE date_key = ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
     [today]
   );
-  const monthlyActiveUsers = scalarCount(
+  const monthlyActiveUsers = await scalarCount(
     `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
      FROM analytics_events
      WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
     [since30]
   );
-  const anonymousVisitors30d = scalarCount(
+  const anonymousVisitors30d = await scalarCount(
     `SELECT COUNT(DISTINCT anonymous_id) AS value
      FROM analytics_events
      WHERE created_at >= ? AND user_id IS NULL AND anonymous_id IS NOT NULL`,
     [since30]
   );
-
-  const eventCount = (eventName: string, since: string) =>
-    scalarCount(
-      'SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = ? AND created_at >= ?',
-      [eventName, since]
-    );
-
-  const repeatUsers30d = scalarCount(
+  const repeatUsers30d = await scalarCount(
     `SELECT COUNT(*) AS value
      FROM (
        SELECT COALESCE(user_id, anonymous_id) AS identity, COUNT(DISTINCT date_key) AS active_days
        FROM analytics_events
        WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL
        GROUP BY identity
-       HAVING active_days > 1
-     )`,
+       HAVING COUNT(DISTINCT date_key) > 1
+     ) AS repeats`,
     [since30]
   );
-
-  const activeLast7d = scalarCount(
+  const activeLast7d = await scalarCount(
     `SELECT COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS value
      FROM analytics_events
      WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL`,
     [since7]
   );
-  const returnedFromPrevious7d = scalarCount(
+  const returnedFromPrevious7d = await scalarCount(
     `SELECT COUNT(*) AS value
      FROM (
        SELECT COALESCE(recent.user_id, recent.anonymous_id) AS visitor_identity
@@ -871,69 +1176,175 @@ export function getAnalyticsSummary(): AnalyticsSummary {
            AND previous.created_at >= ?
            AND previous.created_at < ?
        )
-     )`,
+     ) AS retained`,
     [since7, since14, since7]
   );
 
-  const dailyRows = db.prepare(
-    `WITH days AS (
-       SELECT date_key FROM analytics_events WHERE created_at >= ? GROUP BY date_key
-     )
-     SELECT
-       days.date_key AS date,
-       COUNT(DISTINCT COALESCE(e.user_id, e.anonymous_id)) AS activeUsers,
-       SUM(CASE WHEN e.event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses,
-       SUM(CASE WHEN e.event_name = 'bookmark_created' THEN 1 ELSE 0 END) AS bookmarks,
-       SUM(CASE WHEN e.event_name = 'summary_exported' THEN 1 ELSE 0 END) AS exports,
-       SUM(CASE WHEN e.event_name = 'chat_message_sent' THEN 1 ELSE 0 END) AS chats
-     FROM days
-     LEFT JOIN analytics_events e ON e.date_key = days.date_key
-     GROUP BY days.date_key
-     ORDER BY days.date_key ASC`
-  ).all(since30) as Array<{
-    date: string;
-    activeUsers: number;
-    analyses: number;
-    bookmarks: number;
-    exports: number;
-    chats: number;
-  }>;
+  let dailyRows: AnalyticsSummary['dailySeries'];
+  let monthlyRows: AnalyticsSummary['monthlySeries'];
+  let popularPapers: AnalyticsSummary['popularPapers'];
+  let trafficSources: AnalyticsSummary['trafficSources'];
+  let recentEvents: AnalyticsSummary['recentEvents'];
 
-  const monthlyRows = db.prepare(
-    `SELECT
-       substr(date_key, 1, 7) AS month,
-       COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS activeUsers,
-       SUM(CASE WHEN event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses
-     FROM analytics_events
-     WHERE created_at >= ?
-     GROUP BY month
-     ORDER BY month ASC`
-  ).all(daysAgo(180)) as Array<{ month: string; activeUsers: number; analyses: number }>;
+  if (hasPostgres) {
+    dailyRows = (
+      await pgRows<{
+        date: string;
+        activeusers: string | number;
+        analyses: string | number;
+        bookmarks: string | number;
+        exports: string | number;
+        chats: string | number;
+      }>(
+        `WITH days AS (
+           SELECT date_key FROM analytics_events WHERE created_at >= $1 GROUP BY date_key
+         )
+         SELECT
+           days.date_key AS date,
+           COUNT(DISTINCT COALESCE(e.user_id, e.anonymous_id)) AS activeUsers,
+           COALESCE(SUM(CASE WHEN e.event_name = 'paper_analyzed' THEN 1 ELSE 0 END), 0) AS analyses,
+           COALESCE(SUM(CASE WHEN e.event_name = 'bookmark_created' THEN 1 ELSE 0 END), 0) AS bookmarks,
+           COALESCE(SUM(CASE WHEN e.event_name = 'summary_exported' THEN 1 ELSE 0 END), 0) AS exports,
+           COALESCE(SUM(CASE WHEN e.event_name = 'chat_message_sent' THEN 1 ELSE 0 END), 0) AS chats
+         FROM days
+         LEFT JOIN analytics_events e ON e.date_key = days.date_key
+         GROUP BY days.date_key
+         ORDER BY days.date_key ASC`,
+        [since30]
+      )
+    ).map((row) => ({
+      date: row.date,
+      activeUsers: numberValue(row.activeusers),
+      analyses: numberValue(row.analyses),
+      bookmarks: numberValue(row.bookmarks),
+      exports: numberValue(row.exports),
+      chats: numberValue(row.chats),
+    }));
 
-  const popularPapers = db.prepare(
-    `SELECT arxiv_id AS arxivId, title, analyzed_count AS count, last_analyzed_at AS lastAnalyzedAt
-     FROM public_papers
-     WHERE is_public = 1
-     ORDER BY analyzed_count DESC, last_analyzed_at DESC
-     LIMIT 10`
-  ).all() as AnalyticsSummary['popularPapers'];
+    monthlyRows = (
+      await pgRows<{ month: string; activeusers: string | number; analyses: string | number }>(
+        `SELECT
+           substr(date_key, 1, 7) AS month,
+           COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS activeUsers,
+           COALESCE(SUM(CASE WHEN event_name = 'paper_analyzed' THEN 1 ELSE 0 END), 0) AS analyses
+         FROM analytics_events
+         WHERE created_at >= $1
+         GROUP BY month
+         ORDER BY month ASC`,
+        [since180]
+      )
+    ).map((row) => ({
+      month: row.month,
+      activeUsers: numberValue(row.activeusers),
+      analyses: numberValue(row.analyses),
+    }));
 
-  const trafficSources = db.prepare(
-    `SELECT COALESCE(NULLIF(source, ''), 'Direct / unknown') AS source, COUNT(*) AS count
-     FROM analytics_events
-     WHERE created_at >= ? AND event_name = 'page_view'
-     GROUP BY source
-     ORDER BY count DESC
-     LIMIT 10`
-  ).all(since30) as AnalyticsSummary['trafficSources'];
+    popularPapers = (
+      await pgRows<{ arxivid: string; title: string; count: string | number; lastanalyzedat: string }>(
+        `SELECT arxiv_id AS arxivId, title, analyzed_count AS count, last_analyzed_at AS lastAnalyzedAt
+         FROM public_papers
+         WHERE is_public = TRUE
+         ORDER BY analyzed_count DESC, last_analyzed_at DESC
+         LIMIT 10`
+      )
+    ).map((row) => ({
+      arxivId: row.arxivid,
+      title: row.title,
+      count: numberValue(row.count),
+      lastAnalyzedAt: row.lastanalyzedat,
+    }));
 
-  const recentEvents = db.prepare(
-    `SELECT event_name AS eventName, arxiv_id AS arxivId, title, created_at AS createdAt,
-            CASE WHEN user_id IS NULL THEN 'guest' ELSE 'user' END AS identity
-     FROM analytics_events
-     ORDER BY created_at DESC
-     LIMIT 24`
-  ).all() as AnalyticsSummary['recentEvents'];
+    trafficSources = (
+      await pgRows<{ source: string; count: string | number }>(
+        `SELECT COALESCE(NULLIF(source, ''), 'Direct / unknown') AS source, COUNT(*) AS count
+         FROM analytics_events
+         WHERE created_at >= $1 AND event_name = 'page_view'
+         GROUP BY source
+         ORDER BY count DESC
+         LIMIT 10`,
+        [since30]
+      )
+    ).map((row) => ({ source: row.source, count: numberValue(row.count) }));
+
+    recentEvents = (
+      await pgRows<{ eventname: string; arxivid: string | null; title: string | null; createdat: string; identity: 'user' | 'guest' }>(
+        `SELECT event_name AS eventName, arxiv_id AS arxivId, title, created_at AS createdAt,
+                CASE WHEN user_id IS NULL THEN 'guest' ELSE 'user' END AS identity
+         FROM analytics_events
+         ORDER BY created_at DESC
+         LIMIT 24`
+      )
+    ).map((row) => ({
+      eventName: row.eventname,
+      arxivId: row.arxivid,
+      title: row.title,
+      createdAt: row.createdat,
+      identity: row.identity,
+    }));
+  } else {
+    dailyRows = getSqliteDb()
+      .prepare(
+        `WITH days AS (
+           SELECT date_key FROM analytics_events WHERE created_at >= ? GROUP BY date_key
+         )
+         SELECT
+           days.date_key AS date,
+           COUNT(DISTINCT COALESCE(e.user_id, e.anonymous_id)) AS activeUsers,
+           SUM(CASE WHEN e.event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses,
+           SUM(CASE WHEN e.event_name = 'bookmark_created' THEN 1 ELSE 0 END) AS bookmarks,
+           SUM(CASE WHEN e.event_name = 'summary_exported' THEN 1 ELSE 0 END) AS exports,
+           SUM(CASE WHEN e.event_name = 'chat_message_sent' THEN 1 ELSE 0 END) AS chats
+         FROM days
+         LEFT JOIN analytics_events e ON e.date_key = days.date_key
+         GROUP BY days.date_key
+         ORDER BY days.date_key ASC`
+      )
+      .all(since30) as AnalyticsSummary['dailySeries'];
+
+    monthlyRows = getSqliteDb()
+      .prepare(
+        `SELECT
+           substr(date_key, 1, 7) AS month,
+           COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS activeUsers,
+           SUM(CASE WHEN event_name = 'paper_analyzed' THEN 1 ELSE 0 END) AS analyses
+         FROM analytics_events
+         WHERE created_at >= ?
+         GROUP BY month
+         ORDER BY month ASC`
+      )
+      .all(since180) as AnalyticsSummary['monthlySeries'];
+
+    popularPapers = getSqliteDb()
+      .prepare(
+        `SELECT arxiv_id AS arxivId, title, analyzed_count AS count, last_analyzed_at AS lastAnalyzedAt
+         FROM public_papers
+         WHERE is_public = 1
+         ORDER BY analyzed_count DESC, last_analyzed_at DESC
+         LIMIT 10`
+      )
+      .all() as AnalyticsSummary['popularPapers'];
+
+    trafficSources = getSqliteDb()
+      .prepare(
+        `SELECT COALESCE(NULLIF(source, ''), 'Direct / unknown') AS source, COUNT(*) AS count
+         FROM analytics_events
+         WHERE created_at >= ? AND event_name = 'page_view'
+         GROUP BY source
+         ORDER BY count DESC
+         LIMIT 10`
+      )
+      .all(since30) as AnalyticsSummary['trafficSources'];
+
+    recentEvents = getSqliteDb()
+      .prepare(
+        `SELECT event_name AS eventName, arxiv_id AS arxivId, title, created_at AS createdAt,
+                CASE WHEN user_id IS NULL THEN 'guest' ELSE 'user' END AS identity
+         FROM analytics_events
+         ORDER BY created_at DESC
+         LIMIT 24`
+      )
+      .all() as AnalyticsSummary['recentEvents'];
+  }
 
   return {
     totals: {
@@ -941,24 +1352,24 @@ export function getAnalyticsSummary(): AnalyticsSummary {
       monthlyActiveUsers,
       registeredUsers,
       anonymousVisitors30d,
-      paperAnalysesToday: scalarCount(
-        `SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = 'paper_analyzed' AND date_key = ?`,
-        [today]
+      paperAnalysesToday: await scalarCount(
+        `SELECT COUNT(*) AS value FROM analytics_events WHERE event_name = ? AND date_key = ?`,
+        ['paper_analyzed', today]
       ),
-      paperAnalyses30d: eventCount('paper_analyzed', since30),
-      bookmarks30d: eventCount('bookmark_created', since30),
-      exports30d: eventCount('summary_exported', since30),
-      chatMessages30d: eventCount('chat_message_sent', since30),
+      paperAnalyses30d: await eventCount('paper_analyzed', since30),
+      bookmarks30d: await eventCount('bookmark_created', since30),
+      exports30d: await eventCount('summary_exported', since30),
+      chatMessages30d: await eventCount('chat_message_sent', since30),
       repeatUsers30d,
-      guestAnalyses30d: scalarCount(
+      guestAnalyses30d: await scalarCount(
         `SELECT COUNT(*) AS value FROM analytics_events
-         WHERE event_name = 'paper_analyzed' AND created_at >= ? AND user_id IS NULL`,
-        [since30]
+         WHERE event_name = ? AND created_at >= ? AND user_id IS NULL`,
+        ['paper_analyzed', since30]
       ),
-      loggedInAnalyses30d: scalarCount(
+      loggedInAnalyses30d: await scalarCount(
         `SELECT COUNT(*) AS value FROM analytics_events
-         WHERE event_name = 'paper_analyzed' AND created_at >= ? AND user_id IS NOT NULL`,
-        [since30]
+         WHERE event_name = ? AND created_at >= ? AND user_id IS NOT NULL`,
+        ['paper_analyzed', since30]
       ),
     },
     dailySeries: dailyRows,

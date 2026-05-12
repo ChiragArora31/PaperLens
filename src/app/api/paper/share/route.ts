@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     }
 
     const metadata = parsed.data.analysis.metadata;
-    const paper = savePublicPaperSnapshot({
+    const paper = await savePublicPaperSnapshot({
       arxivId: metadata.id,
       title: metadata.title,
       abstract: metadata.abstract,

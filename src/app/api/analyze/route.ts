@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
     };
 
     try {
-      savePublicPaper({
+      await savePublicPaper({
         arxivId: normalizedArxivId,
         title: metadata.title,
         abstract: metadata.abstract,

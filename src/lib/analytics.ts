@@ -43,14 +43,14 @@ export async function trackRequestEvent(
 ) {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
       image: session?.user?.image,
     });
     const referrer = request.headers.get('referer');
-    trackAnalyticsEvent({
+    await trackAnalyticsEvent({
       ...input,
       userId: user?.id ?? null,
       anonymousId: getVisitorIdFromRequest(request),
@@ -69,7 +69,7 @@ export async function trackServerEvent(input: AnalyticsEventInput) {
   try {
     const headerStore = await headers();
     const referrer = input.referrer ?? headerStore.get('referer');
-    trackAnalyticsEvent({
+    await trackAnalyticsEvent({
       ...input,
       referrer,
       source: input.source ?? trafficSource(referrer),

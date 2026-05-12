@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     }
 
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     const visitorId = existingVisitorId || createVisitorId();
     const referrer = parsed.data.referrer || request.headers.get('referer');
 
-    trackAnalyticsEvent({
+    await trackAnalyticsEvent({
       eventName: parsed.data.eventName,
       userId: user?.id ?? null,
       anonymousId: visitorId,

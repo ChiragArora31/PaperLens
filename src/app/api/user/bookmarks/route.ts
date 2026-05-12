@@ -22,7 +22,7 @@ const bookmarkSchema = z.object({
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -40,11 +40,11 @@ export async function GET(request: NextRequest) {
     if (arxivId) {
       return NextResponse.json({
         success: true,
-        data: { isBookmarked: isBookmarked(userId, arxivId) },
+        data: { isBookmarked: await isBookmarked(userId, arxivId) },
       });
     }
 
-    return NextResponse.json({ success: true, data: listBookmarks(userId, 30) });
+    return NextResponse.json({ success: true, data: await listBookmarks(userId, 30) });
   } catch (error) {
     console.error('Get bookmarks error:', error);
     return NextResponse.json(
@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    upsertBookmark(userId, parsed.data);
+    await upsertBookmark(userId, parsed.data);
     void trackRequestEvent(request, {
       eventName: 'bookmark_created',
       arxivId: parsed.data.arxivId,
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -120,7 +120,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    removeBookmark(userId, arxivId);
+    await removeBookmark(userId, arxivId);
     void trackRequestEvent(request, {
       eventName: 'bookmark_removed',
       arxivId,

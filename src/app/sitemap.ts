@@ -1,10 +1,10 @@
 import type { MetadataRoute } from 'next';
 import { listPublicPapers } from '@/lib/db';
 
-export default function sitemap(): MetadataRoute.Sitemap {
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://paperlens.in';
   const now = new Date();
-  const publicPapers = listPublicPapers(24);
+  const publicPapers = await listPublicPapers(24);
 
   return [
     {

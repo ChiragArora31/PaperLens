@@ -24,7 +24,7 @@ function asAnalysis(value: unknown): PaperAnalysis | null {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { arxivId } = await params;
-  const paper = getPublicPaper(decodeURIComponent(arxivId));
+  const paper = await getPublicPaper(decodeURIComponent(arxivId));
   if (!paper) return { title: 'Paper Breakdown Not Found' };
 
   const description = text((paper.analysis as Partial<PaperAnalysis>)?.tldr?.summary) || paper.abstract;
@@ -49,7 +49,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PublicPaperPage({ params }: PageProps) {
   const { arxivId } = await params;
-  const paper = getPublicPaper(decodeURIComponent(arxivId));
+  const paper = await getPublicPaper(decodeURIComponent(arxivId));
   const analysis = asAnalysis(paper?.analysis);
   if (!paper || !analysis) notFound();
 

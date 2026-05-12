@@ -15,7 +15,7 @@ const recentSchema = z.object({
 export async function POST(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Invalid recent paper payload.' }, { status: 400 });
     }
 
-    upsertRecentPaper(userId, parsed.data);
+    await upsertRecentPaper(userId, parsed.data);
 
     return NextResponse.json({ success: true });
   } catch (error) {

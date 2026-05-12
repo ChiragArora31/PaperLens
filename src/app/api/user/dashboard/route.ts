@@ -7,7 +7,7 @@ import { fetchRecommendedPapers } from '@/lib/recommendations';
 export async function GET() {
   try {
     const session = await getServerSession(authOptions);
-    const user = ensureSessionUser({
+    const user = await ensureSessionUser({
       id: session?.user?.id,
       email: session?.user?.email,
       name: session?.user?.name,
@@ -19,8 +19,10 @@ export async function GET() {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const recents = listRecentPapers(userId, 20);
-    const bookmarks = listBookmarks(userId, 20);
+    const [recents, bookmarks] = await Promise.all([
+      listRecentPapers(userId, 20),
+      listBookmarks(userId, 20),
+    ]);
 
     const seedCategories = Array.from(
       new Set([...bookmarks, ...recents].flatMap((paper) => paper.categories).filter(Boolean))

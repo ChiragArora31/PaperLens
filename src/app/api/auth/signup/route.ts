@@ -45,7 +45,7 @@ export async function POST(request: Request) {
     const email = parsed.data.email.toLowerCase().trim();
     const name = parsed.data.name?.trim() || null;
 
-    const existingUser = getUserByEmail(email);
+    const existingUser = await getUserByEmail(email);
     if (existingUser) {
       return NextResponse.json(
         { success: false, error: 'An account with this email already exists.' },
@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     const hashedPassword = await hash(parsed.data.password, 12);
 
     try {
-      createUser({ email, name, passwordHash: hashedPassword, provider: 'credentials' });
+      await createUser({ email, name, passwordHash: hashedPassword, provider: 'credentials' });
     } catch (error) {
       if (error instanceof DuplicateEmailError) {
         return NextResponse.json(

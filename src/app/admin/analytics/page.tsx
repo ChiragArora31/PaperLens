@@ -45,7 +45,7 @@ export default async function AdminAnalyticsPage() {
   const session = await requireAdminSession();
   if (!session) redirect('/auth?next=/admin/analytics');
 
-  const analytics = getAnalyticsSummary();
+  const analytics = await getAnalyticsSummary();
   const stats = [
     { label: 'DAU', value: analytics.totals.dailyActiveUsers, icon: Activity, hint: 'active today' },
     { label: 'MAU', value: analytics.totals.monthlyActiveUsers, icon: Users, hint: 'active in 30 days' },
