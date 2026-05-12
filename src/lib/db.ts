@@ -1164,19 +1164,19 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
     [since7]
   );
   const returnedFromPrevious7d = await scalarCount(
-    `SELECT COUNT(*) AS value
-     FROM (
-       SELECT COALESCE(recent.user_id, recent.anonymous_id) AS visitor_identity
-       FROM analytics_events recent
-       WHERE recent.created_at >= ? AND COALESCE(recent.user_id, recent.anonymous_id) IS NOT NULL
-       GROUP BY visitor_identity
-       HAVING EXISTS (
-         SELECT 1 FROM analytics_events previous
-         WHERE COALESCE(previous.user_id, previous.anonymous_id) = visitor_identity
-           AND previous.created_at >= ?
-           AND previous.created_at < ?
-       )
-     ) AS retained`,
+    `WITH recent_visitors AS (
+       SELECT DISTINCT COALESCE(user_id, anonymous_id) AS visitor_identity
+       FROM analytics_events
+       WHERE created_at >= ? AND COALESCE(user_id, anonymous_id) IS NOT NULL
+     )
+     SELECT COUNT(*) AS value
+     FROM recent_visitors
+     WHERE EXISTS (
+       SELECT 1 FROM analytics_events previous
+       WHERE COALESCE(previous.user_id, previous.anonymous_id) = recent_visitors.visitor_identity
+         AND previous.created_at >= ?
+         AND previous.created_at < ?
+     )`,
     [since7, since14, since7]
   );
 
